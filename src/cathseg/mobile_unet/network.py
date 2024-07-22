@@ -3,7 +3,10 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 
+from torchvision import transforms
+from torchmetrics.classification import Dice, JaccardIndex
 
+import matplotlib.pyplot as plt
 class InvertedResidualBlock(nn.Module):
     """
     inverted residual block used in MobileNetV2
@@ -88,7 +91,7 @@ class MobileUNet(nn.Module):
         self.D_irb4 = self.irb_bottleneck(24, 16, 1, 2, 6, True)
         self.DConv4x4 = nn.ConvTranspose2d(16, 16, 4, 2, 1, groups=16, bias=False)
         # Final layer: output channel number can be changed as per the usecase
-        self.conv1x1_decode = nn.Conv2d(16, 2, kernel_size=1, stride=1)
+        self.conv1x1_decode = nn.Conv2d(16, 1, kernel_size=1, stride=1)
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         """
@@ -148,8 +151,13 @@ class MobileUNet(nn.Module):
 class MobileUNetLightning(pl.LightningModule):
     def __init__(self):
         super(MobileUNetLightning, self).__init__()
+#        self.encoder = nn.Sequential(
+#                nn.Conv2d()
+#            )
         self.model = model.MobileUNet()
         self.loss = nn.BCEWithLogitsLoss()
+        self.dice = Dice(average = "micro")
+        #self.jaccardindex = JaccardIndex()
 
     def forward(self, x):
         return self.model(x)
@@ -157,31 +165,50 @@ class MobileUNetLightning(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.model(x)
-        loss = self.loss(y_hat, y)
+        y_hat = y_hat.expand([4, 3, 256, 256])
+
+        loss = self.loss(y_hat, y.float())
+
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.model(x)
-        loss = self.loss(y_hat, y)
+        y_hat = y_hat.expand([4, 3, 256, 256])
+
+        #plt.imshow(torch.sigmoid(y_hat).cpu().numpy()[0, 0, :, :], cmap = "gray")
+        #plt.savefig("validation.png")
+
+        loss = self.loss(y_hat, y.float())
+        dice = self.dice(y_hat, y.int()) 
+        
+        #ji = self.jaccardindex(y_hat, y.float())
+
         self.log("val_loss", loss)
+        self.log("val_dice", dice)
+        #self.log("val_jaccardindex", ji)
 
     def test_step(self, batch, batch_idx):
         x, y = batch
         y_hat = self.model(x)
-        loss = self.loss(y_hat, y)
+        loss = self.loss(y_hat, y.float())
+        dice = self.dice(y_hat, y.float())
+        ji = self.jaccardindex(y_hat, y.float())
+
         self.log("test_loss", loss)
+        self.log("test_dice", dice)
+        self.log("test_jaccardindex", ji)
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.model.parameters(), lr=1e-3)
+        return torch.optim.SGD(self.model.parameters(), lr=1e-3, momentum=0.5, weight_decay=1e-4)
 
     def predict(self, x):
         return self.model(x)
 
 
 if __name__ == "__main__":
-    X = torch.rand((1, 3, 1024, 1024))  # Shape immitates that of our data.
+    X = torch.rand((1, 3, 1024, 1024))  # Shape imitates that of our data.
     model = MobileUNetLightning()
     print(model)
 
