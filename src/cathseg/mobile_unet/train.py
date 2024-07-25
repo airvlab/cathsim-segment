@@ -18,21 +18,22 @@ image_transforms = transforms.Compose(
     [
         #transforms.Lambda(lambda x: x / 255.0),
         transforms.ToPILImage(),
-        transforms.Resize((256, 256)),
+        #transforms.Resize((256, 256)),
 	    transforms.ToTensor(),
+        transforms.ConvertImageDtype(torch.float32)
         #transforms.Normalize((0.5,), (0.5,)),
         # gray to RGB
-        transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
-	    transforms.Lambda(lambda x: np.array(x, dtype = np.float32)),
+        #transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
     ]
 )
 
 mask_transforms = transforms.Compose(
     [
         transforms.ToPILImage(),
-        transforms.Resize((256, 256)),
+        #transforms.Resize((256, 256)),
         transforms.ToTensor(),
-        transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
+        transforms.Lambda(lambda x: np.where(x != 0.0, 1, 0))
+        #transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
         #transforms.Lambda(lambda x: np.array(x, dtype = np.int32))
     ]
 )
@@ -47,17 +48,17 @@ def main():
                                     save_top_k = 1)
     early_stopping = EarlyStopping(monitor = "val_dice",
                                    min_delta = 0.0,
-                                   patience = 15,
+                                   patience = 200,
                                    mode = "max",
                                    verbose = True)
-    scheduler = StochasticWeightAveraging(swa_epoch_start = 69,
+    scheduler = StochasticWeightAveraging(swa_epoch_start = 50,
                                           swa_lrs = 1e-4,
                                           annealing_epochs = 5,
                                           annealing_strategy = "cos")
 
 
 
-    #torch.set_float32_matmul_precision("high")
+    torch.set_float32_matmul_precision("high")
 
     # TODO: Don't use absolute paths.
     root = "../../../guide3d/data/annotations/"
@@ -74,13 +75,13 @@ def main():
                      mask_transform = mask_transforms,
                      split = "val")
 
-    dl_train = data.DataLoader(ds_train, batch_size=4, shuffle=True, num_workers=16)
-    dl_val = data.DataLoader(ds_val, batch_size=4, shuffle=False, num_workers=16)
+    dl_train = data.DataLoader(ds_train, batch_size=2, shuffle=True, num_workers=8)
+    dl_val = data.DataLoader(ds_val, batch_size=2, shuffle=False, num_workers=8)
 
-    trainer = pl.Trainer(default_root_dir="/users/sgsdoust/sharedscratch/checkpoints/",
+    trainer = pl.Trainer(default_root_dir="./",
                          max_epochs = 200,
                          logger = wandb_logger,
-                         fast_dev_run = False,
+                         #max_steps = 10,
                          callbacks = [ckpt_callback, early_stopping, scheduler])
     trainer.fit(model,
                 train_dataloaders = dl_train,
