@@ -3,14 +3,11 @@ import pytorch_lightning as pl
 import torch.utils.data as data
 
 from cathseg.attention.hyperparams import MAX_EPOCHS
-from cathseg.attention.network import AttentionNet
+from cathseg.attention.network import EncoderLightning
 from guide3d.dataset.segment import Guide3D
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-
-# For the sake of testing during implementation...
-from cathseg.attention.network import Encoder, Decoder
 
 
 def main():
@@ -18,7 +15,7 @@ def main():
     # TODO: Don't use absolute paths.
     root = "../../../guide3d/data/annotations/"
     #model = AttentionNet()
-    enc = Encoder(14)
+    enc = EncoderLightning()
     
     torch.set_float32_matmul_precision("high")
 
@@ -41,7 +38,6 @@ def main():
                          logger = wandb_logger)
     trainer.fit(enc,
                 train_dataloaders = dl_train,
-                test_dataloaders = dl_test,
                 val_dataloaders = dl_val)
 
 if __name__ == "__main__":

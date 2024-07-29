@@ -1,5 +1,6 @@
 import torch
 import torchvision
+import pytorch_lightning as pl
 
 from cathseg.attention.hyperparams import (
         ENC_LEARNING_RATE,
@@ -27,22 +28,73 @@ class Encoder(nn.Module):
         self.adaptive_pool = nn.AdaptiveAvgPool2d((enc_img_size,
                                                    enc_img_size))
 
-        self.fine_tune(should_finetune = True)
+        #self.fine_tune(should_finetune = True)
 
     def forward(self, images):
         out = self.resnet(images)
-        out = self.adaptive_pool(images)
+        out = self.adaptive_pool(out)
 
-    def fine_tune(self, should_finetune = True):
-        for p in self.resnet.parameters():
-            p.requires_grad = False
+        return out
 
-        for c in list(self.resnet.children())[5:]:
-            for p in c.parameters():
-                p.requires_grad = should_finetune
+class EncoderLightning(pl.LightningModule):
+    def __init__(self):
+        super(EncoderLightning, self).__init__()
+        self.model = Encoder(24)
+        self.loss = nn.CrossEntropyLoss()
 
-# AttentionNet also contains the encoder module.
+    def forward(self, x):
+        return self.model(x)
+
+    def training_step(self, batch):
+        x, _ = batch
+        dec_x = self.model(x)
+        loss = self.loss(dec_x, x)
+
+        self.log("train_loss", loss)
+        return loss
+
+# This class also contains the Decoder.
 class AttentionNet(nn.Module):
+    def __init__(self, enc_dim, dec_dim, attn_dim):
+        super(AttentionNet, self).__init__()
+
+        self.enc_dim = enc_dim
+        self.dec_dim = dec_dim
+        self.attn_dim = attn_dim
+
+        self.attn_net = AttentionComp(enc_dim, dec_dim, attn_dim)
+
+        self.dropout = nn.Dropout(p = 0.5)
+        self.decoding = nn.LSTMCell(2 * enc_dim,
+                                    dec_dim, bias = True)
+        self.init_c = nn.Linear(enc_dim, dec_dim)
+        self.init_h = nn.Linear(enc_dim, dec_dim)
+        self.beta = nn.Linear(dec_dim, enc_dim)
+        self.sigmoid = nn.Sigmoid()
+
+    def init_h_state(self, enc_out):
+        mean_enc_out = enc_out.mean(dim = 1)
+        h = self.init_h(mean_enc_out)
+        c = self.init_c(mean_enc_out)
+
+        return h, c
+
+    def forward(self, enc_out):
+        # Initialise LSTM state.
+        h, c = self.init_h_state(enc_out)
+        print(h, c)
+
+    def training_step(self, batch):
+        x, y = batch
+
+    def testing_step(self, batch):
+        x, y = batch
+
+    
+
+
+# Attention component.
+class AttentionComp(nn.Module):
     def __init__(self, encoder_dim, decoder_dim, attn_dim):
         super(AttentionNet, self).__init__()
 
@@ -63,29 +115,6 @@ class AttentionNet(nn.Module):
 
         return attn_weighted_enc, alpha
     
-    def training_step(self, batch):
-        x, y = batch
-
-    def validation_step(self, batch):
-        x, y = batch
-
-    def test_step(self, batch):
-        x, y = batch
-
-    def configure_optimizers(self):
-        enc_optimiser = torch.optim.Adam(f,
-                                lr = ENC_LEARNING_RATE,
-                                momentum = ENC_MOMENTUM
-                )
-        dec_optimiser = torch.optim.Adam(f,
-                                         lr = DEC_LEARNING_RATE,
-                                         momentum = DEC_MOMENTUM)
-
-        return enc_optimiser, dec_optimiser
-
-    def predict(self, x):
-        return NotImplemented
-
 if __name__ == "__main__":
     X = torch.rand((3, 1024, 1024))
     enc = Encoder(14)
