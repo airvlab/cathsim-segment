@@ -36,22 +36,34 @@ class Encoder(nn.Module):
 
         return out
 
-class EncoderLightning(pl.LightningModule):
+class DecoderWithAttentionEncoder(pl.LightningModule):
     def __init__(self):
-        super(EncoderLightning, self).__init__()
-        self.model = Encoder(24)
-        self.loss = nn.CrossEntropyLoss()
+        super(DecoderWithAttentionEncoder, self).__init__()
+        self.model_enc = Encoder(24)
+        #self.model_dec = AttentionNet()
+        self.loss = nn.BCEWithLogitsLoss()
 
     def forward(self, x):
         return self.model(x)
 
     def training_step(self, batch):
-        x, _ = batch
-        dec_x = self.model(x)
-        loss = self.loss(dec_x, x)
+        x, _ = batch # i.e. (2, 1024, 1024)
+        # We now need shape (2, 3, 1024, 1024).
+        x = x.view(2, 1, 1024, 1024).expand(-1, 3, -1, -1)
+        
+        # Push data through Encoder, then Attention Net. with Decoder.
+        x = self.model_enc(x)
+        #! = self.model_dec(!)
 
-        self.log("train_loss", loss)
-        return loss
+        #loss = self.loss(dec_x, x)
+
+        #self.log("train_loss", loss)
+        return torch.tensor(1.0, requires_grad = True)
+    
+    def configure_optimizers(self):
+        return torch.optim.SGD(self.model_enc.parameters(),
+                               lr = ENC_LEARNING_RATE,
+                               momentum = ENC_MOMENTUM) 
 
 # This class also contains the Decoder.
 class AttentionNet(nn.Module):
