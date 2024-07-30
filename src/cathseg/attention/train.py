@@ -6,7 +6,7 @@ import torch.utils.data as data
 
 from torchvision import transforms
 from cathseg.attention.hyperparams import MAX_EPOCHS
-from cathseg.attention.network import DecoderWithAttentionEncoder
+from cathseg.attention.network import EncoderWithAttentionDecoder
 from guide3d.dataset.segment import Guide3D
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -31,7 +31,7 @@ def main():
     #wandb_logger = WandbLogger(log_model = "all")
     # TODO: Don't use absolute paths.
     root = "../../../guide3d/data/annotations/"
-    model = DecoderWithAttentionEncoder()
+    model = EncoderWithAttentionDecoder()
     
     torch.set_float32_matmul_precision("high")
 
@@ -44,9 +44,9 @@ def main():
                       mask_transform = mask_transforms,
                       split = "test")
     ds_val = Guide3D(root = root,
-                      image_transform = image_transforms,
-                      mask_transform = mask_transforms,
-                      split = "val")
+                     image_transform = image_transforms,
+                     mask_transform = mask_transforms,
+                     split = "val")
 
     dl_train = data.DataLoader(ds_train, batch_size = 2,
                                shuffle = True, num_workers = 2)

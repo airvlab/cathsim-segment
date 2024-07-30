@@ -36,7 +36,7 @@ class Encoder(nn.Module):
 
         return out
 
-class DecoderWithAttentionEncoder(pl.LightningModule):
+class EncoderWithAttentionDecoder(pl.LightningModule):
     def __init__(self):
         super(DecoderWithAttentionEncoder, self).__init__()
         self.model_enc = Encoder(24)
