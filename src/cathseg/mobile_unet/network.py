@@ -1,8 +1,11 @@
+import wandb
+
 import cathseg.mobile_unet.network as model
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 
 from torchvision import transforms
 from torchmetrics.classification import Dice, JaccardIndex, BinaryJaccardIndex
@@ -139,27 +142,56 @@ class MobileUNetLightning(pl.LightningModule):
     def forward(self, x):
         return self.model(x)
 
-    def training_step(self, batch):
+    def training_step(self, batch, batch_idx):
         x, y = batch
+        y = y.long()
+
+        x, y = RandomCropper(x, y)
+
         y_hat = self.model(x)
         loss = self.loss(y_hat[:, 1, :, :], y.float()[:, 0, :, :])
+
+        if batch_idx == 0:
+            table = wandb.Table(columns = ["X cropped", "Y cropped"])
+
+            for i in range(min(5, x.size(0))):
+                cropped_img = wandb.Image(x[i])
+                cropped_mask = wandb.Image(y[i])
+
+                table.add_data(cropped_img, cropped_mask)
+
+            self.logger.experiment.log({"cropped_samples": table})
 
         self.log("train_loss", loss)
         return loss
 
-    def validation_step(self, batch):
+    def validation_step(self, batch, batch_idx):
         x, y = batch
+        y = y.long()
+
         y_hat = self.model(x)
         #plt.imshow(torch.sigmoid(y_hat).cpu().numpy()[0, 0, :, :], cmap = "gray")
         #plt.savefig("validation.png")
 
         loss = self.loss(y_hat[:, 1, :, :], y.float()[:, 0, :, :])
-        dice = self.dice(y_hat, y.int())
-        ji = self.jaccardindex(y_hat[:, 1, :, :], y.float()[:, 0, :, :])
+        #dice = self.dice(y_hat, y.int())
+        #ji = self.jaccardindex(y_hat[:, 1, :, :], y.float()[:, 0, :, :])
+
+        if batch_idx == 0:
+            table = wandb.Table(columns = ["X", "Y preds", "Y preds sigmoid"])
+
+            for i in range(min(5, x.size(0))):
+                input_img = wandb.Image(x[i])
+                pred_img = wandb.Image(y_hat[i])
+                pred_img_sigmoid = wandb.Image(torch.sigmoid(y_hat[i]))
+
+                table.add_data(input_img, pred_img, pred_img_sigmoid)
+
+            self.logger.experiment.log({"img_samples": table})
 
         self.log("val_loss", loss)
-        self.log("val_dice", dice)
-        self.log("val_jaccardindex", ji)
+        #self.log("val_dice", dice)
+        #self.log("val_jaccardindex", ji)
 
 
     def test_step(self, batch, batch_idx):
@@ -174,11 +206,16 @@ class MobileUNetLightning(pl.LightningModule):
         self.log("test_jaccardindex", ji)
 
     def configure_optimizers(self):
-        return torch.optim.SGD(self.model.parameters(), lr=1e-3, momentum=0.5, weight_decay=1e-3)
+        return torch.optim.SGD(self.model.parameters(), lr=1e-3, momentum=0.9)
 
     def predict(self, x):
         return self.model(x)
 
+
+def RandomCropper(imgs, masks):
+    i, j, h, w = transforms.RandomCrop.get_params(imgs, (412, 412))
+
+    return TF.crop(imgs, i, j, h, w), TF.crop(masks, i, j, h, w)
 
 if __name__ == "__main__":
     X = torch.rand((1, 3, 1024, 1024))  # Shape imitates that of our data.
