@@ -151,16 +151,6 @@ class MobileUNetLightning(pl.LightningModule):
         y_hat = self.model(x)
         loss = self.loss(y_hat[:, 1, :, :], y.float()[:, 0, :, :])
 
-        if batch_idx == 0:
-            table = wandb.Table(columns = ["X cropped", "Y cropped"])
-
-            for i in range(min(5, x.size(0))):
-                cropped_img = wandb.Image(x[i])
-                cropped_mask = wandb.Image(y[i])
-
-                table.add_data(cropped_img, cropped_mask)
-
-            self.logger.experiment.log({"cropped_samples": table})
 
         self.log("train_loss", loss)
         return loss
