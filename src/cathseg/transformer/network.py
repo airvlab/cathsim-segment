@@ -59,6 +59,9 @@ class ViTEncoder(nn.Module):
         # Remove the classification head
         self.vit.heads = nn.Identity()
 
+        # Add avg pooling as first layer to ensure arbitrary sizes are mapped to ViT input size.
+        self.initial_pooling = nn.AdaptiveAvgPool2d((224, 224))
+
         # Add a projection layer to match the desired output dimension if specified
         self.output_dim = output_dim
         if output_dim != self.vit.hidden_dim:
@@ -67,6 +70,8 @@ class ViTEncoder(nn.Module):
             self.proj = nn.Identity()
 
     def forward(self, x):
+        # Pass into pooling.
+        x = self.initial_pooling(x)
         # Forward pass through the ViT model
         x = self.vit(x)
 
