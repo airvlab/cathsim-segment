@@ -1,4 +1,5 @@
 import math
+import wandb
 
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
@@ -221,12 +222,12 @@ class ImageToSequenceTransformer(pl.LightningModule):
         loss = loss_t.sum() + loss_c.sum() + loss_eos.sum()
 
         self.training_step_output = dict(
-            img=X[0],
-            t_true=t_true[0],
-            t_pred=t_pred[0],
-            c_true=c_true[0],
-            c_pred=c_pred[0],
-            seq_len=target_mask.sum(dim=1)[0],
+            imgs=X,
+            t_true=t_true,
+            t_pred=t_pred,
+            c_true=c_true,
+            c_pred=c_pred,
+            seq_len=target_mask.sum(dim=1),
         )
 
         return loss_c.sum(), loss_t.sum(), loss_eos.sum(), loss
@@ -245,6 +246,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss_c, loss_t, loss_eos, loss = self._step(batch, batch_idx)
         self._log(loss_c, loss_t, loss_eos, loss, "val")
+
         return loss
 
     def inference_step(self, X):
@@ -286,7 +288,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
             return dict(t=t_pred, c=c_pred)
 
     def configure_optimizers(self):
-        optimizer = optim.NAdam(self.parameters(), lr=1e-4)
+        optimizer = optim.Adam(self.parameters(), lr=1e-5)
         return optimizer
 
 

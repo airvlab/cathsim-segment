@@ -121,13 +121,18 @@ class ImageCallbackLogger(Callback):
 
         self.epoch += 1
 
+        instance = pl_module.training_step_output
+        img_true, img_pred = self.make_images(instance)
+
+
 
 def train():
     wandb_logger = pl.loggers.WandbLogger(
         project="transformer",
         log_model=True,
     )
-    root = Path.home() / "data/segment-real/"
+    #root = Path.home() / "data/segment-real/"
+    root = "/home/shayandoust/Desktop/cathsim-segment/guide3d/data/annotations"
     train_ds = Guide3D(
         root=root,
         annotations_file="sphere_wo_reconstruct.json",
