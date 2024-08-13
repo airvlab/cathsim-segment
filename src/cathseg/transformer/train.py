@@ -17,15 +17,16 @@ os.environ["WANDB_MODE"] = "offline"
 
 torch.set_float32_matmul_precision("high")
 
+IMAGE_SIZE = 224
 MAX_LEN = 20
 
 vit_transform = transforms.Compose(
     [
-        # transforms.ToPILImage(),  # Convert image to PIL image
-        # transforms.Resize((224, 224)),  # Resize image to 224x224
+        transforms.ToPILImage(),  # Convert image to PIL image
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
         # grayscale to RGB
-        # transforms.ToTensor(),
-        # transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
         transforms.Normalize(  # Normalize with mean and std
             mean=[0.5, 0.5, 0.5],  # ViT models usually use these normalization values
             std=[0.5, 0.5, 0.5],
@@ -73,8 +74,10 @@ class ImageCallbackLogger(Callback):
         c_pred = c_pred.transpose(1, 0)
         c_true = c_true.transpose(1, 0)
 
-        img = np.repeat(img, 3, axis=-1) * 255
-        img = img.astype(np.uint8)
+        plt.imshow(img)
+        plt.show()
+
+        exit()
         # img_pred = self.make_points(img.copy(), c_pred, t_pred)
         img_true = self.make_points(img.copy(), c_true, t_true)
 
@@ -97,10 +100,10 @@ class ImageCallbackLogger(Callback):
 
 
 def train():
-    wandb_logger = pl.loggers.WandbLogger(
-        project="transformer",
-        log_model=True,
-    )
+    # wandb_logger = pl.loggers.WandbLogger(
+    #     project="transformer",
+    #     log_model=True,
+    # )
     root = Path.home() / "data/segment-real/"
     train_ds = Guide3D(
         root=root,
@@ -123,13 +126,13 @@ def train():
     model = Model(max_seq_len=train_ds.max_length)
     trainer = pl.Trainer(
         max_epochs=200,
-        logger=wandb_logger,
+        # logger=wandb_logger,
     )
     trainer.fit(model, train_dl, val_dl)
 
 
 def dummy_run():
-    model = Model(max_seq_len=MAX_LEN)
+    model = Model(max_seq_len=MAX_LEN, img_size=IMAGE_SIZE)
     dataloader = data.DataLoader(
         utils.DummyData(64, (3, 224, 224), MAX_LEN), batch_size=8, shuffle=True
     )
@@ -142,6 +145,25 @@ def dummy_run():
     trainer.fit(model, dataloader)
 
 
+def dummy_run_2():
+    root = Path.home() / "data/segment-real/"
+    train_ds = Guide3D(
+        root=root,
+        annotations_file="sphere_wo_reconstruct.json",
+        image_transform=vit_transform,
+        split="train",
+    )
+    model = Model(max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE)
+    dataloader = data.DataLoader(train_ds, batch_size=8, shuffle=True)
+
+    trainer = pl.Trainer(
+        max_epochs=200,
+        fast_dev_run=True,
+        callbacks=[ImageCallbackLogger()],
+    )
+    trainer.fit(model, dataloader)
+
+
 if __name__ == "__main__":
-    dummy_run()
+    dummy_run_2()
     # train()

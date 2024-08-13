@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
-from cathseg.utils import DummyData
 from torchvision.models import ViT_B_16_Weights, vit_b_16
 
 MAX_LEN = 20
@@ -246,64 +245,46 @@ def unnormalize_img(img):
     return img
 
 
-def visualize_instance(instance):
+def plot_instance(instance):
     import numpy as np
     from scipy.interpolate import splev
 
-    img = instance["img"].cpu().numpy().transpose(1, 2, 0)
-    img = unnormalize_img(img)
-    seq_len = instance["seq_len"].detach().numpy().astype(int)
-    c_pred = instance["c_pred"].detach().numpy()[:seq_len]
-    c_true = instance["c_true"].detach().numpy()[:seq_len]
-    t_pred = instance["t_pred"].detach().numpy()[:seq_len]
-    t_true = instance["t_true"].detach().numpy()[:seq_len]
-
-    # add 4 zeroes to t at the beginning
-    t_pred = np.concatenate([np.zeros((4, 1)), t_pred], axis=0)
-    t_true = np.concatenate([np.zeros((4, 1)), t_true], axis=0)
-
-    c_pred = c_pred.transpose(1, 0)
-    c_true = c_true.transpose(1, 0)
-
-    samples = np.linspace(0, t_true[-1], 30)
-
-    sampled_c_pred = splev(samples, (t_pred.flatten(), c_pred.flatten(), 3))
-    sampled_c_true = splev(samples, (t_true.flatten(), c_true.flatten(), 3))
-
-    fig, ax = plt.subplots(1, 2, figsize=(12, 6))
-
-    ax[0].imshow(img, cmap="gray")
-    ax[0].plot(c_pred[:, 0], c_pred[:, 1], "r", label="Predicted")
-    ax[0].plot(c_true[:, 0], c_true[:, 1], "g", label="True")
-
-    ax[1].imshow(img, cmap="gray")
-    ax[1].plot(sampled_c_pred[0], sampled_c_pred[1], "r", label="Predicted")
-    ax[1].plot(sampled_c_true[0], sampled_c_true[1], "g", label="True")
-
-    plt.show()
-    plt.close()
-
-    print(
-        "Img:",
-        img.shape,
-        "C_pred:",
-        c_pred.shape,
-        "C_true:",
-        c_true.shape,
-        "T_pred:",
-        t_pred.shape,
-        "T_true:",
-        t_true.shape,
+    img, target_seq, target_mask = instance
+    img, target_seq, target_mask = (
+        img.cpu().detach().numpy(),
+        target_seq.cpu().detach().numpy(),
+        target_mask.cpu().detach().numpy(),
     )
 
-    exit()
+    seq_len = target_mask.sum().astype(int)
+    target_seq = target_seq[1:seq_len]
+
+    t = target_seq[:, 0]
+    t = np.concatenate([np.zeros((4,)), t])
+    c = target_seq[:, 1:].T
+
+    sample_idx = np.linspace(0, t[-1], 40)
+    samples = splev(sample_idx, (t, c, 3))
+
+    img = img.squeeze(0)
+    # img = np.ones(img.shape).transpose(1, 2, 0)
+    plt.imshow(img, cmap="gray")
+    plt.scatter(c[0], c[1], c="r")
+    plt.plot(samples[0], samples[1], c="b")
+    plt.axis("off")
+    plt.show()
 
 
 def main():
-    NUM_SAMPLES = 64
-    X_SHAPE = (3, 224, 224)
+    from pathlib import Path
 
-    dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
+    from guide3d.dataset.image.spline import Guide3D
+
+    NUM_SAMPLES = 64
+    X_SHAPE = (3, 1024, 1024)
+
+    # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
+    dataset = Guide3D(root=Path.home() / "data/segment-real/")
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=True)
 
     model = ImageToSequenceTransformer(max_seq_len=MAX_LEN)
@@ -314,11 +295,12 @@ def main():
         model.train()
         running_loss = 0.0
         for i, batch in enumerate(dataloader):
-            # Perform the training step
-            loss = model.training_step(batch, i)
-            instance = model.training_step_output
-            visualize_instance(instance)
+            img, target_seq, target_mask = batch
+            plot_instance(tuple(x[0] for x in batch))
+            continue
             exit()
+
+            loss = model.training_step(batch, i)
 
             # Backward and optimize
             optimizer.zero_grad()
