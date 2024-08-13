@@ -38,6 +38,14 @@ vit_transform = transforms.Compose(
 )
 
 
+def c_transform(c):
+    return c / IMAGE_SIZE
+
+
+def t_transform(t):
+    return t / 2000
+
+
 class ImageCallbackLogger(Callback):
     def __init__(self):
         self.epoch = 0
@@ -76,16 +84,18 @@ class ImageCallbackLogger(Callback):
         img = self.unnorm(img)
 
         seq_len = instance["seq_len"].detach().cpu().numpy().astype(int)
-        c_pred = instance["c_pred"].detach().cpu().numpy()[1:seq_len].T
-        c_true = instance["c_true"].detach().cpu().numpy()[1:seq_len].T
+        c_pred = instance["c_pred"].detach().cpu().numpy()[1:seq_len].T * 1024
+        c_true = instance["c_true"].detach().cpu().numpy()[1:seq_len].T * 1024
         t_pred = instance["t_pred"].detach().cpu().numpy()[1:seq_len].flatten()
         t_true = instance["t_true"].detach().cpu().numpy()[1:seq_len].flatten()
 
         # add 4 zeroes to t at the beginning
-        t_pred = np.concatenate([np.zeros((4)), t_pred], axis=0)
-        t_true = np.concatenate([np.zeros((4)), t_true], axis=0)
+        t_pred = np.concatenate([np.zeros((4)), t_pred], axis=0) * 2000
+        t_true = np.concatenate([np.zeros((4)), t_true], axis=0) * 2000
 
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        img = img * 255
+        img = img.astype(np.uint8)
 
         img_true = self.make_points(img.copy(), c_true, t_true, (255, 0, 0))
         img_pred = self.make_points(img.copy(), c_pred, t_pred, (0, 255, 0))
@@ -95,11 +105,15 @@ class ImageCallbackLogger(Callback):
     def on_train_epoch_end(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
-        if self.epoch % 10 == 0:
+        if self.epoch % 5 == 0:
             instance = pl_module.training_step_output
-            imgs = self.make_images(instance)
 
-            trainer.logger.log_image(key="Images", images=imgs, caption=["GT", "Pred"])
+            trainer.logger.log_image(
+                key="Images",
+                images=self.make_images(instance),
+                caption=["GT", "Pred"],
+            )
+
         self.epoch += 1
 
 
@@ -113,12 +127,16 @@ def train():
         root=root,
         annotations_file="sphere_wo_reconstruct.json",
         image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
         split="train",
     )
     val_ds = Guide3D(
         root=root,
         annotations_file="sphere_wo_reconstruct.json",
         image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
         split="val",
     )
     train_dl = data.DataLoader(

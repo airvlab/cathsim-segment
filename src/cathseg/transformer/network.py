@@ -143,30 +143,31 @@ class ImageToSequenceTransformer(pl.LightningModule):
         self.criterion_eos = nn.BCELoss(reduction="none")
 
         self.training_step_output = None
+        self.max_seq_len = max_seq_len
 
     def forward(self, x, target_seq, target_mask):
-        # Feature extraction
-        features = self.encoder(x)  # Output shape: (batch_size, d_model, H, W)
+        # feature extraction
+        features = self.encoder(x)  # output shape: (batch_size, d_model, h, w)
 
         features = features.unsqueeze(
             0
-        )  # Shape to (1, batch_size, d_model), to match transformer input format
+        )  # shape to (1, batch_size, d_model), to match transformer input format
 
-        # Target sequence embedding and positional encoding
+        # target sequence embedding and positional encoding
         target_seq = self.target_embedding(
             target_seq
-        )  # Shape to (batch_size, seq_len, d_model)
+        )  # shape to (batch_size, seq_len, d_model)
         target_seq = self.pos_encoder(
             target_seq.permute(1, 0, 2)
-        )  # Shape to (seq_len, batch_size, d_model)
+        )  # shape to (seq_len, batch_size, d_model)
 
-        tgt_key_padding_mask = target_mask == 0  # Shape: (batch_size, seq_len)
+        tgt_key_padding_mask = target_mask == 0  # shape: (batch_size, seq_len)
 
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
+        tgt_mask = nn.transformer.generate_square_subsequent_mask(
             target_seq.size(0)
         ).to(target_seq.device)
 
-        # Transformer Decoder with masked self-attention and key padding mask
+        # transformer decoder with masked self-attention and key padding mask
         decoder_output = self.transformer_decoder(
             tgt=target_seq,
             memory=features,
@@ -174,10 +175,16 @@ class ImageToSequenceTransformer(pl.LightningModule):
             tgt_key_padding_mask=tgt_key_padding_mask,
         )
 
-        # Output prediction
-        c_pred = self.fc_c(decoder_output)  # Shape: (seq_len, batch_size, 2)
-        t_pred = self.fc_t(decoder_output)  # Shape: (seq_len, batch_size, 1)
-        eos_pred = torch.sigmoid(self.fc_eos(decoder_output))
+        # output prediction
+        c_pred = torch.sigmoid(
+            self.fc_c(decoder_output)
+        )  # shape: (seq_len, batch_size, 2)
+        t_pred = torch.sigmoid(
+            self.fc_t(decoder_output)
+        )  # shape: (seq_len, batch_size, 1)
+        eos_pred = torch.sigmoid(
+            self.fc_eos(decoder_output)
+        )  # shape: (seq_len, batch_size, 1)
 
         return (
             c_pred.permute(1, 0, 2),
@@ -239,6 +246,53 @@ class ImageToSequenceTransformer(pl.LightningModule):
         loss_c, loss_t, loss_eos, loss = self._step(batch, batch_idx)
         self._log(loss_c, loss_t, loss_eos, loss, "val")
         return loss
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=None):
+        X, target_seq, target_mask = batch
+
+        # feature extraction
+        features = self.encoder(X)  # output shape: (batch_size, d_model, h, w)
+
+        features = features.unsqueeze(
+            0
+        )  # shape to (1, batch_size, d_model), to match transformer input format
+
+        generated_seq = torch.zeros_like(target_seq[:, :1, :])
+        print(generated_seq.shape)
+        exit()
+
+        # target sequence embedding and positional encoding
+        target_seq = self.target_embedding(
+            target_seq
+        )  # shape to (batch_size, seq_len, d_model)
+        target_seq = self.pos_encoder(
+            target_seq.permute(1, 0, 2)
+        )  # shape to (seq_len, batch_size, d_model)
+
+        tgt_key_padding_mask = target_mask == 0  # shape: (batch_size, seq_len)
+
+        tgt_mask = nn.transformer.generate_square_subsequent_mask(
+            target_seq.size(0)
+        ).to(target_seq.device)
+
+        # transformer decoder with masked self-attention and key padding mask
+        decoder_output = self.transformer_decoder(
+            tgt=target_seq,
+            memory=features,
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=tgt_key_padding_mask,
+        )
+
+        # output prediction
+        c_pred = torch.sigmoid(
+            self.fc_c(decoder_output)
+        )  # shape: (seq_len, batch_size, 2)
+        t_pred = torch.sigmoid(
+            self.fc_t(decoder_output)
+        )  # shape: (seq_len, batch_size, 1)
+        eos_pred = torch.sigmoid(
+            self.fc_eos(decoder_output)
+        )  # shape: (seq_len, batch_size, 1)
 
     def configure_optimizers(self):
         optimizer = optim.NAdam(self.parameters(), lr=1e-4)
@@ -319,6 +373,9 @@ def main():
         for i, batch in enumerate(dataloader):
             img, target_seq, target_mask = batch
             # plot_instance(tuple(x[0] for x in batch))
+
+            model.predict_step(batch, i)
+            exit()
 
             loss = model.training_step(batch, i)
 
