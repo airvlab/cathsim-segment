@@ -13,7 +13,12 @@ MAX_LEN = 20
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model, dropout=0.1, max_len=MAX_LEN):
+    def __init__(
+        self,
+        d_model: int,
+        max_len: int,
+        dropout: float = 0.1,
+    ):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
 
@@ -32,25 +37,6 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class PretrainedViTEncoder(nn.Module):
-    def __init__(self, pretrained=True):
-        super(PretrainedViTEncoder, self).__init__()
-
-        # Load the pretrained ViT model
-        if pretrained:
-            self.vit = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
-        else:
-            self.vit = vit_b_16(weights=None)
-
-        # Remove the classification head
-        self.vit.heads = nn.Identity()
-
-    def forward(self, x):
-        # Forward pass through the ViT model
-        x = self.vit(x)
-        return x  # Returns the encoded features
-
-
 class ViTEncoder(nn.Module):
     def __init__(self, n_channels, image_shape, output_dim=512, pretrained=True):
         super(ViTEncoder, self).__init__()
@@ -60,6 +46,10 @@ class ViTEncoder(nn.Module):
             self.vit = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
         else:
             self.vit = vit_b_16(weights=None)
+
+        # Freeze the parameters
+        for param in self.vit.parameters():
+            param.requires_grad = False
 
         # Adjust the input layer if the number of channels is different from 3
         if n_channels != 3:
@@ -81,7 +71,7 @@ class ViTEncoder(nn.Module):
         # Forward pass through the ViT model
         x = self.vit(x)
 
-        # Project to the desired output dimension if necessary
+        # Project to the desired output dimension
         x = self.proj(x)
 
         return x
@@ -90,21 +80,20 @@ class ViTEncoder(nn.Module):
 class ImageToSequenceTransformer(pl.LightningModule):
     def __init__(
         self,
-        img_size=(224, 224),
-        d_model=512,
-        num_decoder_layers=6,
-        nhead=8,
-        dim_feedforward=2048,
-        dropout=0.1,
-        max_seq_len=MAX_LEN,
+        max_seq_len: int,
+        img_size: tuple = (224, 224),
+        d_model: int = 512,
+        num_decoder_layers: int = 6,
+        nhead: int = 8,
+        dim_feedforward: int = 2048,
+        dropout: float = 0.1,
     ):
         super(ImageToSequenceTransformer, self).__init__()
 
-        # Encoder
         self.encoder = ViTEncoder(3, img_size, d_model, pretrained=True)
 
         # Positional Encoding
-        self.pos_encoder = PositionalEncoding(d_model, dropout, max_len=max_seq_len)
+        self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout)
 
         # Decoder-only Transformer with masked self-attention
         decoder_layer = nn.TransformerDecoderLayer(
@@ -117,23 +106,29 @@ class ImageToSequenceTransformer(pl.LightningModule):
             decoder_layer, num_layers=num_decoder_layers
         )
 
-        # Output layers for coefficients `c` and knots `t`
+        # Output layers for coefficients `c` and knots `t` and end-of-sequence token `eos`
         self.fc_c = nn.Linear(d_model, 2)  # Predicting 2D control points
         self.fc_t = nn.Linear(d_model, 1)  # Predicting 1D knots
-        self.fc_eos = nn.Linear(d_model, 1)  # Predicting stop token
+        self.fc_eos = nn.Linear(d_model, 1)  # Predicting end-of-sequence token
 
         # Embedding layer for target sequence
         self.target_embedding = nn.Linear(
             3, d_model
-        )  # We concatenate c (2D) and t (1D) to form a 3D input for the next step
+        )  # Concatenate c (2D) and t (1D) to form a 3D input for the next step
 
+        # Loss functions
         self.criterion_c = nn.MSELoss(reduction="none")
         self.criterion_t = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
+        self.tgt_mask = nn.Transformer.generate_square_subsequent_mask(max_seq_len)
+
+        self.training_step_output = None
+
     def forward(self, x, target_seq, target_mask):
         # Feature extraction
-        features = self.encoder(x)  # Output shape: (batch_size, 512, H, W)
+        features = self.encoder(x)  # Output shape: (batch_size, d_model, H, W)
+
         features = features.unsqueeze(
             0
         )  # Shape to (1, batch_size, d_model), to match transformer input format
@@ -146,20 +141,16 @@ class ImageToSequenceTransformer(pl.LightningModule):
             target_seq.permute(1, 0, 2)
         )  # Shape to (seq_len, batch_size, d_model)
 
-        # Create a mask to hide future tokens (seq_len, seq_len)
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
-            target_seq.size(0)
-        ).to(target_seq.device)
+        tgt_key_padding_mask = target_mask == 0  # Shape: (batch_size, seq_len)
 
-        tgt_key_padding_mask = (target_mask == 0).to(
-            target_seq.device
-        )  # Shape: (batch_size, seq_len)
+        # Needs to be moved here to match the device of the input tensors
+        self.tgt_mask = self.tgt_mask.to(self.device)
 
         # Transformer Decoder with masked self-attention and key padding mask
         decoder_output = self.transformer_decoder(
             tgt=target_seq,
             memory=features,
-            tgt_mask=tgt_mask,
+            tgt_mask=self.tgt_mask,
             tgt_key_padding_mask=tgt_key_padding_mask,
         )
 
@@ -174,7 +165,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
             eos_pred.permute(1, 0, 2),
         )
 
-    def training_step(self, batch, batch_idx):
+    def _step(self, batch, batch_idx):
         X, target_seq, target_mask = batch
 
         # Create EOS labels: 1 for the last valid token, 0 otherwise
@@ -202,10 +193,35 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
         loss = loss_c.sum() + loss_t.sum() + loss_eos.sum()
 
+        self.training_step_output = dict(
+            img=X[0],
+            c_true=c_true[0],
+            c_pred=c_pred[0],
+            t_true=t_true[0],
+            t_pred=t_pred[0],
+            seq_len=target_mask.sum(dim=1)[0],
+        )
+
+        return loss_c.sum(), loss_t.sum(), loss_eos.sum(), loss
+
+    def _log(self, loss_c, loss_t, loss_eos, loss, tag):
+        self.log(f"{tag}/loss_c", loss_c.sum())
+        self.log(f"{tag}/loss_t", loss_t.sum())
+        self.log(f"{tag}/loss_eos", loss_eos.sum())
+        self.log(f"{tag}/loss", loss)
+
+    def training_step(self, batch, batch_idx):
+        loss_c, loss_t, loss_eos, loss = self._step(batch, batch_idx)
+        self._log(loss_c, loss_t, loss_eos, loss, "train")
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        loss_c, loss_t, loss_eos, loss = self._step(batch, batch_idx)
+        self._log(loss_c, loss_t, loss_eos, loss, "val")
         return loss
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-4)
+        optimizer = optim.NAdam(self.parameters(), lr=1e-4)
         return optimizer
 
 
@@ -222,6 +238,67 @@ def visualize_positional_encoding(d_model, max_len):
     plt.show()
 
 
+def unnormalize_img(img):
+    import numpy as np
+
+    img = img * 0.5 + 0.5
+    img = np.clip(img, 0, 1)[:, :, 0]
+    return img
+
+
+def visualize_instance(instance):
+    import numpy as np
+    from scipy.interpolate import splev
+
+    img = instance["img"].cpu().numpy().transpose(1, 2, 0)
+    img = unnormalize_img(img)
+    seq_len = instance["seq_len"].detach().numpy().astype(int)
+    c_pred = instance["c_pred"].detach().numpy()[:seq_len]
+    c_true = instance["c_true"].detach().numpy()[:seq_len]
+    t_pred = instance["t_pred"].detach().numpy()[:seq_len]
+    t_true = instance["t_true"].detach().numpy()[:seq_len]
+
+    # add 4 zeroes to t at the beginning
+    t_pred = np.concatenate([np.zeros((4, 1)), t_pred], axis=0)
+    t_true = np.concatenate([np.zeros((4, 1)), t_true], axis=0)
+
+    c_pred = c_pred.transpose(1, 0)
+    c_true = c_true.transpose(1, 0)
+
+    samples = np.linspace(0, t_true[-1], 30)
+
+    sampled_c_pred = splev(samples, (t_pred.flatten(), c_pred.flatten(), 3))
+    sampled_c_true = splev(samples, (t_true.flatten(), c_true.flatten(), 3))
+
+    fig, ax = plt.subplots(1, 2, figsize=(12, 6))
+
+    ax[0].imshow(img, cmap="gray")
+    ax[0].plot(c_pred[:, 0], c_pred[:, 1], "r", label="Predicted")
+    ax[0].plot(c_true[:, 0], c_true[:, 1], "g", label="True")
+
+    ax[1].imshow(img, cmap="gray")
+    ax[1].plot(sampled_c_pred[0], sampled_c_pred[1], "r", label="Predicted")
+    ax[1].plot(sampled_c_true[0], sampled_c_true[1], "g", label="True")
+
+    plt.show()
+    plt.close()
+
+    print(
+        "Img:",
+        img.shape,
+        "C_pred:",
+        c_pred.shape,
+        "C_true:",
+        c_true.shape,
+        "T_pred:",
+        t_pred.shape,
+        "T_true:",
+        t_true.shape,
+    )
+
+    exit()
+
+
 def main():
     NUM_SAMPLES = 64
     X_SHAPE = (3, 224, 224)
@@ -229,47 +306,19 @@ def main():
     dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=True)
 
-    model = ImageToSequenceTransformer(max_seq_len=MAX_LEN).to("cuda")
-    # Use reduction='none' to handle masking
-    criterion_c = nn.MSELoss(reduction="none")
-    criterion_t = nn.MSELoss(reduction="none")
-    criterion_eos = nn.BCELoss(reduction="none")
+    model = ImageToSequenceTransformer(max_seq_len=MAX_LEN)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop
     for epoch in range(100):  # Replace with more epochs as needed
         model.train()
         running_loss = 0.0
-        for i, (X, target_seq, target_mask) in enumerate(dataloader):
-            X, target_seq, target_mask = (
-                X.to("cuda"),
-                target_seq.to("cuda"),
-                target_mask.to("cuda"),
-            )
-
-            # Create EOS labels: 1 for the last valid token, 0 otherwise
-            eos_labels = torch.zeros_like(target_mask)
-            eos_labels[
-                torch.arange(target_mask.size(0)), (target_mask.sum(dim=1) - 1).long()
-            ] = 1
-
-            # Forward pass
-            c_pred, t_pred, eos_pred = model(X, target_seq, target_mask)
-
-            # Compute loss
-            c_true = target_seq[:, :, :2]  # Extract true coefficients
-            t_true = target_seq[:, :, 2:3]  # Extract true knots
-
-            loss_c = criterion_c(c_pred, c_true)
-            loss_t = criterion_t(t_pred, t_true)
-            loss_eos = criterion_eos(eos_pred.squeeze(-1), eos_labels)
-
-            # Apply the mask to the losses
-            loss_c = loss_c * target_mask.unsqueeze(-1)
-            loss_t = loss_t * target_mask.unsqueeze(-1)
-            loss_eos = loss_eos * target_mask
-
-            loss = loss_c.sum() + loss_t.sum() + loss_eos.sum()
+        for i, batch in enumerate(dataloader):
+            # Perform the training step
+            loss = model.training_step(batch, i)
+            instance = model.training_step_output
+            visualize_instance(instance)
+            exit()
 
             # Backward and optimize
             optimizer.zero_grad()
