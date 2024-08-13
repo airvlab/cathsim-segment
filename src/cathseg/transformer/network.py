@@ -7,8 +7,24 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
 from torchvision.models import ViT_B_16_Weights, vit_b_16
+from torchvision.transforms import transforms
 
 MAX_LEN = 20
+N_CHANNELS = 1
+IMG_SIZE = 1024
+
+vit_transform = transforms.Compose(
+    [
+        transforms.ToPILImage(),  # Convert image to PIL image
+        # transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x.repeat(N_CHANNELS, 1, 1)),
+        transforms.Normalize(  # Normalize with mean and std
+            mean=[0.5 for _ in range(N_CHANNELS)],
+            std=[0.5 for _ in range(N_CHANNELS)],
+        ),
+    ]
+)
 
 
 class PositionalEncoding(nn.Module):
@@ -85,6 +101,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
     def __init__(
         self,
         max_seq_len: int,
+        n_channels: int = 3,
         img_size: tuple = (224, 224),
         d_model: int = 512,
         num_decoder_layers: int = 6,
@@ -94,7 +111,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
     ):
         super(ImageToSequenceTransformer, self).__init__()
 
-        self.encoder = ViTEncoder(3, img_size, d_model, pretrained=True)
+        self.encoder = ViTEncoder(n_channels, img_size, d_model, pretrained=True)
 
         # Positional Encoding
         self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout)
@@ -125,8 +142,6 @@ class ImageToSequenceTransformer(pl.LightningModule):
         self.criterion_t = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
-        self.tgt_mask = nn.Transformer.generate_square_subsequent_mask(max_seq_len)
-
         self.training_step_output = None
 
     def forward(self, x, target_seq, target_mask):
@@ -147,14 +162,15 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
         tgt_key_padding_mask = target_mask == 0  # Shape: (batch_size, seq_len)
 
-        # Needs to be moved here to match the device of the input tensors
-        self.tgt_mask = self.tgt_mask.to(self.device)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
+            target_seq.size(0)
+        ).to(target_seq.device)
 
         # Transformer Decoder with masked self-attention and key padding mask
         decoder_output = self.transformer_decoder(
             tgt=target_seq,
             memory=features,
-            tgt_mask=self.tgt_mask,
+            tgt_mask=tgt_mask,
             tgt_key_padding_mask=tgt_key_padding_mask,
         )
 
@@ -183,26 +199,26 @@ class ImageToSequenceTransformer(pl.LightningModule):
         c_pred, t_pred, eos_pred = self(X, target_seq, target_mask)
 
         # Compute loss
-        c_true = target_seq[:, :, :2]  # Extract true coefficients
-        t_true = target_seq[:, :, 2:3]  # Extract true knots
+        t_true = target_seq[:, :, 0:1]  # Extract true knots
+        c_true = target_seq[:, :, 1:3]  # Extract true coefficients
 
-        loss_c = self.criterion_c(c_pred, c_true)
         loss_t = self.criterion_t(t_pred, t_true)
+        loss_c = self.criterion_c(c_pred, c_true)
         loss_eos = self.criterion_eos(eos_pred.squeeze(-1), eos_labels)
 
         # Apply the mask to the losses
-        loss_c = loss_c * target_mask.unsqueeze(-1)
         loss_t = loss_t * target_mask.unsqueeze(-1)
+        loss_c = loss_c * target_mask.unsqueeze(-1)
         loss_eos = loss_eos * target_mask
 
-        loss = loss_c.sum() + loss_t.sum() + loss_eos.sum()
+        loss = loss_t.sum() + loss_c.sum() + loss_eos.sum()
 
         self.training_step_output = dict(
             img=X[0],
-            c_true=c_true[0],
-            c_pred=c_pred[0],
             t_true=t_true[0],
             t_pred=t_pred[0],
+            c_true=c_true[0],
+            c_pred=c_pred[0],
             seq_len=target_mask.sum(dim=1)[0],
         )
 
@@ -285,14 +301,15 @@ def main():
 
     from guide3d.dataset.image.spline import Guide3D
 
-    NUM_SAMPLES = 64
-    X_SHAPE = (3, 1024, 1024)
-
     # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
-    dataset = Guide3D(root=Path.home() / "data/segment-real/")
+    dataset = Guide3D(
+        root=Path.home() / "data/segment-real/", image_transform=vit_transform
+    )
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=True)
 
-    model = ImageToSequenceTransformer(max_seq_len=MAX_LEN)
+    model = ImageToSequenceTransformer(
+        max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMG_SIZE
+    )
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop
@@ -301,9 +318,7 @@ def main():
         running_loss = 0.0
         for i, batch in enumerate(dataloader):
             img, target_seq, target_mask = batch
-            plot_instance(tuple(x[0] for x in batch))
-            continue
-            exit()
+            # plot_instance(tuple(x[0] for x in batch))
 
             loss = model.training_step(batch, i)
 
