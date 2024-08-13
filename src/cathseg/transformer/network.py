@@ -1,5 +1,4 @@
 import math
-import wandb
 
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
@@ -221,14 +220,17 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
         loss = loss_t.sum() + loss_c.sum() + loss_eos.sum()
 
-        self.training_step_output = dict(
-            imgs=X,
-            t_true=t_true,
-            t_pred=t_pred,
-            c_true=c_true,
-            c_pred=c_pred,
-            seq_len=target_mask.sum(dim=1),
-        )
+        self.training_step_output = [
+            dict(
+                img=X[i],
+                t_true=t_true[i],
+                t_pred=t_pred[i],
+                c_true=c_true[i],
+                c_pred=c_pred[i],
+                seq_len=target_mask.sum(dim=1)[i],
+            )
+            for i in range(5)
+        ]
 
         return loss_c.sum(), loss_t.sum(), loss_eos.sum(), loss
 

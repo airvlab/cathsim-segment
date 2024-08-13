@@ -90,8 +90,8 @@ class ImageCallbackLogger(Callback):
         t_true = instance["t_true"].detach().cpu().numpy()[1:seq_len].flatten()
 
         generated = plmodule.inference_step(instance["img"])
-        t_gen = generated["t"].detach().cpu().numpy()
-        c_gen = generated["c"].detach().cpu().numpy()
+        t_gen = generated["t"].detach().cpu().numpy() * 2000
+        c_gen = generated["c"].detach().cpu().numpy() * 1024
 
         # add 4 zeroes to t at the beginning
         t_pred = np.concatenate([np.zeros((4)), t_pred], axis=0) * 2000
@@ -111,19 +111,17 @@ class ImageCallbackLogger(Callback):
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
     ) -> None:
         if self.epoch % 5 == 0:
-            instance = pl_module.training_step_output
+            instances = pl_module.training_step_output
+            imgs = [self.make_images(instance, pl_module) for instance in instances]
 
-            trainer.logger.log_image(
-                key="Images",
-                images=self.make_images(instance, pl_module),
-                caption=["GT", "Pred", "Inference"],
-            )
+            for i, img in enumerate(imgs):
+                trainer.logger.log_image(
+                    key=f"Images_{i}",
+                    images=img,
+                    caption=["GT", "Pred", "Inference"],
+                )
 
         self.epoch += 1
-
-        instance = pl_module.training_step_output
-        img_true, img_pred = self.make_images(instance)
-
 
 
 def train():
@@ -131,7 +129,7 @@ def train():
         project="transformer",
         log_model=True,
     )
-    #root = Path.home() / "data/segment-real/"
+    # root = Path.home() / "data/segment-real/"
     root = "/home/shayandoust/Desktop/cathsim-segment/guide3d/data/annotations"
     train_ds = Guide3D(
         root=root,
@@ -203,5 +201,5 @@ def dummy_run_2():
 
 
 if __name__ == "__main__":
-    # dummy_run_2()
-    train()
+    dummy_run_2()
+    # train()
