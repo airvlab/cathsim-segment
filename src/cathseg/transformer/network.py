@@ -70,6 +70,9 @@ class ViTEncoder(nn.Module):
         # Remove the classification head
         self.vit.heads = nn.Identity()
 
+        # Add avg pooling as first layer to ensure arbitrary sizes are mapped to ViT input size.
+        self.initial_pooling = nn.AdaptiveAvgPool2d((224, 224))
+
         # Add a projection layer to match the desired output dimension if specified
         self.output_dim = output_dim
         if output_dim != self.vit.hidden_dim:
@@ -78,6 +81,8 @@ class ViTEncoder(nn.Module):
             self.proj = nn.Identity()
 
     def forward(self, x):
+        # Pass into pooling.
+        x = self.initial_pooling(x)
         # Forward pass through the ViT model
         x = self.vit(x)
 
@@ -101,7 +106,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
         super(ImageToSequenceTransformer, self).__init__()
 
         # Encoder
-        self.encoder = ViTEncoder(3, img_size, d_model, pretrained=True)
+        self.encoder = ViTEncoder(1, img_size, d_model, pretrained=True)
 
         # Positional Encoding
         self.pos_encoder = PositionalEncoding(d_model, dropout, max_len=max_seq_len)
@@ -224,7 +229,7 @@ def visualize_positional_encoding(d_model, max_len):
 
 def main():
     NUM_SAMPLES = 64
-    X_SHAPE = (3, 224, 224)
+    X_SHAPE = (1, 224, 224)
 
     dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=True)
