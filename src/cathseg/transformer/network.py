@@ -163,7 +163,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
         tgt_key_padding_mask = target_mask == 0  # shape: (batch_size, seq_len)
 
-        tgt_mask = nn.transformer.generate_square_subsequent_mask(
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
             target_seq.size(0)
         ).to(target_seq.device)
 
@@ -247,52 +247,43 @@ class ImageToSequenceTransformer(pl.LightningModule):
         self._log(loss_c, loss_t, loss_eos, loss, "val")
         return loss
 
-    def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        X, target_seq, target_mask = batch
+    def inference_step(self, X):
+        with torch.no_grad():
+            X = X.unsqueeze(0)
+            features = self.encoder(X)  # output shape: (batch_size, d_model, h, w)
 
-        # feature extraction
-        features = self.encoder(X)  # output shape: (batch_size, d_model, h, w)
+            features = features.unsqueeze(
+                0
+            )  # shape to (1, batch_size, d_model), to match transformer input format
 
-        features = features.unsqueeze(
-            0
-        )  # shape to (1, batch_size, d_model), to match transformer input format
+            generated_seq = torch.zeros(1, 1, 3).to(X.device)
 
-        generated_seq = torch.zeros_like(target_seq[:, :1, :])
-        print(generated_seq.shape)
-        exit()
+            for i in range(self.max_seq_len):
+                # target sequence embedding and positional encoding
+                target_seq = self.target_embedding(generated_seq)
+                target_seq = self.pos_encoder(target_seq.permute(1, 0, 2))
 
-        # target sequence embedding and positional encoding
-        target_seq = self.target_embedding(
-            target_seq
-        )  # shape to (batch_size, seq_len, d_model)
-        target_seq = self.pos_encoder(
-            target_seq.permute(1, 0, 2)
-        )  # shape to (seq_len, batch_size, d_model)
+                decoder_output = self.transformer_decoder(
+                    tgt=target_seq,
+                    memory=features,
+                )
 
-        tgt_key_padding_mask = target_mask == 0  # shape: (batch_size, seq_len)
+                decoder_output = decoder_output[-1].unsqueeze(0)
 
-        tgt_mask = nn.transformer.generate_square_subsequent_mask(
-            target_seq.size(0)
-        ).to(target_seq.device)
+                c_pred = torch.sigmoid(self.fc_c(decoder_output))
+                t_pred = torch.sigmoid(self.fc_t(decoder_output))
 
-        # transformer decoder with masked self-attention and key padding mask
-        decoder_output = self.transformer_decoder(
-            tgt=target_seq,
-            memory=features,
-            tgt_mask=tgt_mask,
-            tgt_key_padding_mask=tgt_key_padding_mask,
-        )
+                combined = torch.cat([t_pred, c_pred], dim=-1).permute(1, 0, 2)
+                generated_seq = torch.cat([generated_seq, combined], dim=1)
 
-        # output prediction
-        c_pred = torch.sigmoid(
-            self.fc_c(decoder_output)
-        )  # shape: (seq_len, batch_size, 2)
-        t_pred = torch.sigmoid(
-            self.fc_t(decoder_output)
-        )  # shape: (seq_len, batch_size, 1)
-        eos_pred = torch.sigmoid(
-            self.fc_eos(decoder_output)
-        )  # shape: (seq_len, batch_size, 1)
+                eos_pred = torch.sigmoid(self.fc_eos(decoder_output))
+                if eos_pred > 0.5:
+                    break
+
+            generated_seq = generated_seq.squeeze(0)
+            t_pred = generated_seq[:, 0]
+            c_pred = generated_seq[:, 1:]
+            return dict(t=t_pred, c=c_pred)
 
     def configure_optimizers(self):
         optimizer = optim.NAdam(self.parameters(), lr=1e-4)
@@ -374,7 +365,7 @@ def main():
             img, target_seq, target_mask = batch
             # plot_instance(tuple(x[0] for x in batch))
 
-            model.predict_step(batch, i)
+            model.inference_step(img[0])
             exit()
 
             loss = model.training_step(batch, i)

@@ -75,7 +75,7 @@ class ImageCallbackLogger(Callback):
 
         return img
 
-    def make_images(self, instance):
+    def make_images(self, instance, plmodule):
         img = instance["img"].detach().cpu().numpy()
         if img.shape[0] == 1:
             img = img[0]
@@ -89,6 +89,10 @@ class ImageCallbackLogger(Callback):
         t_pred = instance["t_pred"].detach().cpu().numpy()[1:seq_len].flatten()
         t_true = instance["t_true"].detach().cpu().numpy()[1:seq_len].flatten()
 
+        generated = plmodule.inference_step(instance["img"])
+        t_gen = generated["t"].detach().cpu().numpy()
+        c_gen = generated["c"].detach().cpu().numpy()
+
         # add 4 zeroes to t at the beginning
         t_pred = np.concatenate([np.zeros((4)), t_pred], axis=0) * 2000
         t_true = np.concatenate([np.zeros((4)), t_true], axis=0) * 2000
@@ -99,8 +103,9 @@ class ImageCallbackLogger(Callback):
 
         img_true = self.make_points(img.copy(), c_true, t_true, (255, 0, 0))
         img_pred = self.make_points(img.copy(), c_pred, t_pred, (0, 255, 0))
+        img_gen = self.make_points(img.copy(), c_gen, t_gen, (0, 0, 255))
 
-        return [img_true, img_pred]
+        return [img_true, img_pred, img_gen]
 
     def on_train_epoch_end(
         self, trainer: pl.Trainer, pl_module: pl.LightningModule
@@ -110,8 +115,8 @@ class ImageCallbackLogger(Callback):
 
             trainer.logger.log_image(
                 key="Images",
-                images=self.make_images(instance),
-                caption=["GT", "Pred"],
+                images=self.make_images(instance, pl_module),
+                caption=["GT", "Pred", "Inference"],
             )
 
         self.epoch += 1
