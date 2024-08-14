@@ -10,6 +10,8 @@ __pycache__/
 .Python
 build/
 develop-eggs/
+wandb/
+lighting_logs/
 dist/
 downloads/
 eggs/
