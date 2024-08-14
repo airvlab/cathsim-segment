@@ -3,6 +3,7 @@ from pathlib import Path
 
 import cathseg.utils as utils
 import cv2
+import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -14,6 +15,8 @@ from pytorch_lightning import Callback
 from scipy.interpolate import splev
 
 import wandb
+
+torch.manual_seed(0)
 
 wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
@@ -46,13 +49,42 @@ def t_transform(t):
     return t / 2000
 
 
-class ImageCallbackLogger(Callback):
-    def __init__(self):
-        self.epoch = 0
+def c_untransform(c):
+    return c * IMAGE_SIZE
 
-    def unnorm(self, img):
-        img = img * 0.5 + 0.5
-        return img
+
+def t_untransform(t):
+    return t * 2000
+
+
+def unnorm(img):
+    img = img * 0.5 + 0.5
+    return img
+
+
+def plot_images(img_true, img_pred, img_gen):
+    fig, ax = plt.subplots(1, 3, figsize=(15, 5))
+    ax[0].imshow(img_true)
+    ax[1].imshow(img_pred)
+    ax[2].imshow(img_gen)
+
+    ax[0].set_title("GT")
+    ax[1].set_title("Pred")
+    ax[2].set_title("Inference")
+
+    ax[0].axis("off")
+    ax[1].axis("off")
+    ax[2].axis("off")
+
+    plt.show()
+    plt.close()
+    # exit()
+
+
+class ImageCallbackLogger(Callback):
+    def __init__(self, interval=5):
+        self.epoch = 0
+        self.interval = interval
 
     def make_points(self, img, c, t, color=(0, 255, 0)):
         def in_bounds(x, y):
@@ -75,27 +107,36 @@ class ImageCallbackLogger(Callback):
 
         return img
 
-    def make_images(self, instance, plmodule):
-        img = instance["img"].detach().cpu().numpy()
+    def make_images(self, instance):
+        def unpack_instance(instance):
+            img = instance["img"].detach().cpu().numpy()
+            seq_len = instance["seq_len"].detach().cpu().numpy().astype(int)
+            c_pred = instance["c_pred"].detach().cpu().numpy()[1:seq_len]
+            c_true = instance["c_true"].detach().cpu().numpy()[1:seq_len]
+            c_gen = instance["c_gen"].detach().cpu().numpy()  # alredy in shape
+            t_pred = instance["t_pred"].detach().cpu().numpy()[1:seq_len]
+            t_true = instance["t_true"].detach().cpu().numpy()[1:seq_len]
+            t_gen = instance["t_gen"].detach().cpu().numpy()  # alredy in shape
+            return img, c_pred, c_true, c_gen, t_pred, t_true, t_gen
+
+        img, c_pred, c_true, c_gen, t_pred, t_true, t_gen = unpack_instance(instance)
+        img = unnorm(img)
+        c_pred = c_untransform(c_pred).T
+        c_true = c_untransform(c_true).T
+        c_gen = c_untransform(c_gen).T
+        t_pred = t_untransform(t_pred).flatten()
+        t_true = t_untransform(t_true).flatten()
+        t_gen = t_untransform(t_gen)
+
         if img.shape[0] == 1:
             img = img[0]
         else:
             img = img.transpose(1, 2, 0)
-        img = self.unnorm(img)
-
-        seq_len = instance["seq_len"].detach().cpu().numpy().astype(int)
-        c_pred = instance["c_pred"].detach().cpu().numpy()[1:seq_len].T * 1024
-        c_true = instance["c_true"].detach().cpu().numpy()[1:seq_len].T * 1024
-        t_pred = instance["t_pred"].detach().cpu().numpy()[1:seq_len].flatten()
-        t_true = instance["t_true"].detach().cpu().numpy()[1:seq_len].flatten()
-
-        generated = plmodule.inference_step(instance["img"])
-        t_gen = generated["t"].detach().cpu().numpy() * 2000
-        c_gen = generated["c"].detach().cpu().numpy() * 1024
 
         # add 4 zeroes to t at the beginning
-        t_pred = np.concatenate([np.zeros((4)), t_pred], axis=0) * 2000
-        t_true = np.concatenate([np.zeros((4)), t_true], axis=0) * 2000
+        t_pred = np.concatenate([np.zeros((4)), t_pred], axis=0)
+        t_true = np.concatenate([np.zeros((4)), t_true], axis=0)
+        t_gen = np.concatenate([np.zeros((4)), t_gen], axis=0)
 
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
         img = img * 255
@@ -105,21 +146,34 @@ class ImageCallbackLogger(Callback):
         img_pred = self.make_points(img.copy(), c_pred, t_pred, (0, 255, 0))
         img_gen = self.make_points(img.copy(), c_gen, t_gen, (0, 0, 255))
 
+        # plot_images(img_true, img_pred, img_gen)
+
         return [img_true, img_pred, img_gen]
 
-    def on_train_epoch_end(
-        self, trainer: pl.Trainer, pl_module: pl.LightningModule
-    ) -> None:
-        if self.epoch % 5 == 0:
+    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if self.epoch % self.interval == 0:
             instances = pl_module.training_step_output
-            imgs = [self.make_images(instance, pl_module) for instance in instances]
+            for i, instance in enumerate(instances):
+                generated = pl_module.inference_step(instance["img"])
+                instances[i]["c_gen"] = generated["c"]
+                instances[i]["t_gen"] = generated["t"]
 
-            for i, img in enumerate(imgs):
-                trainer.logger.log_image(
-                    key=f"Images_{i}",
-                    images=img,
-                    caption=["GT", "Pred", "Inference"],
-                )
+            imgs = [self.make_images(instance) for instance in instances]
+
+            columns = ["GT", "Pred", "Inference"]
+            data = []
+            for row in imgs:
+                data.append([wandb.Image(img) for img in row])
+
+            table = wandb.Table(columns, data)
+
+            trainer.logger.experiment.log({"Images": table})
+
+            # trainer.logger.log_image(
+            #     key=f"Images_{i}",
+            #     images=img,
+            #     caption=["GT", "Pred", "Inference"],
+            # )
 
         self.epoch += 1
 
@@ -129,14 +183,14 @@ def train():
         project="transformer",
         log_model=True,
     )
-    # root = Path.home() / "data/segment-real/"
-    root = "/home/shayandoust/Desktop/cathsim-segment/guide3d/data/annotations"
+    root = Path.home() / "data/segment-real/"
     train_ds = Guide3D(
         root=root,
         annotations_file="sphere_wo_reconstruct.json",
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
+        add_init_token=True,
         split="train",
     )
     val_ds = Guide3D(
@@ -145,17 +199,12 @@ def train():
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
+        add_init_token=True,
         split="val",
     )
-    train_dl = data.DataLoader(
-        train_ds, batch_size=8, shuffle=True, num_workers=os.cpu_count() // 2
-    )
-    val_dl = data.DataLoader(
-        val_ds, batch_size=8, shuffle=False, num_workers=os.cpu_count() // 2
-    )
-    model = Model(
-        max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS
-    )
+    train_dl = data.DataLoader(train_ds, batch_size=8, shuffle=True, num_workers=os.cpu_count() // 2)
+    val_dl = data.DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=os.cpu_count() // 2)
+    model = Model(max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
     trainer = pl.Trainer(
         max_epochs=200,
         logger=wandb_logger,
@@ -167,9 +216,7 @@ def train():
 def dummy_run():
     MAX_LEN = 20
     model = Model(max_seq_len=MAX_LEN, img_size=IMAGE_SIZE)
-    dataloader = data.DataLoader(
-        utils.DummyData(64, (3, 224, 224), MAX_LEN), batch_size=8, shuffle=True
-    )
+    dataloader = data.DataLoader(utils.DummyData(64, (3, 224, 224), MAX_LEN), batch_size=8, shuffle=True)
 
     trainer = pl.Trainer(
         max_epochs=200,
@@ -185,11 +232,12 @@ def dummy_run_2():
         root=root,
         annotations_file="sphere_wo_reconstruct.json",
         image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
+        add_init_token=True,
         split="train",
     )
-    model = Model(
-        max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS
-    )
+    model = Model(max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
     dataloader = data.DataLoader(train_ds, batch_size=8, shuffle=True)
 
     trainer = pl.Trainer(
@@ -201,5 +249,5 @@ def dummy_run_2():
 
 
 if __name__ == "__main__":
-    dummy_run_2()
-    # train()
+    # dummy_run_2()
+    train()

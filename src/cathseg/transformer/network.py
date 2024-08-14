@@ -39,9 +39,7 @@ class PositionalEncoding(nn.Module):
 
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(1e4) / d_model)
-        )
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(1e4) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
         pe = pe.unsqueeze(0).transpose(0, 1)
@@ -68,9 +66,7 @@ class ViTEncoder(nn.Module):
 
         # Adjust the input layer if the number of channels is different from 3
         if n_channels != 3:
-            self.vit.conv_proj = nn.Conv2d(
-                n_channels, self.vit.conv_proj.out_channels, kernel_size=16, stride=16
-            )
+            self.vit.conv_proj = nn.Conv2d(n_channels, self.vit.conv_proj.out_channels, kernel_size=16, stride=16)
 
         # Remove the classification head
         self.vit.heads = nn.Identity()
@@ -123,14 +119,12 @@ class ImageToSequenceTransformer(pl.LightningModule):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
         )
-        self.transformer_decoder = nn.TransformerDecoder(
-            decoder_layer, num_layers=num_decoder_layers
-        )
+        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
 
         # Output layers for coefficients `c` and knots `t` and end-of-sequence token `eos`
-        self.fc_c = nn.Linear(d_model, 2)  # Predicting 2D control points
-        self.fc_t = nn.Linear(d_model, 1)  # Predicting 1D knots
-        self.fc_eos = nn.Linear(d_model, 1)  # Predicting end-of-sequence token
+        self.fc_c = nn.Sequential(nn.Linear(d_model, 2), nn.Sigmoid())  # Predicting 2D control
+        self.fc_t = nn.Sequential(nn.Linear(d_model, 1), nn.Sigmoid())  # Predicting 1D knots
+        self.fc_eos = nn.Sequential(nn.Linear(d_model, 1), nn.Sigmoid())  # Predicting end-of-sequence token
 
         # Embedding layer for target sequence
         self.target_embedding = nn.Linear(
@@ -142,32 +136,28 @@ class ImageToSequenceTransformer(pl.LightningModule):
         self.criterion_t = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
+        self.lambda_c = 10.0
+        self.lambda_t = 10.0
+        self.lambda_eos = 1.0
+
         self.training_step_output = None
         self.max_seq_len = max_seq_len
 
     def forward(self, x, target_seq, target_mask):
-        # feature extraction
-        features = self.encoder(x)  # output shape: (batch_size, d_model, h, w)
+        features = self.encoder(x)  #  (batch_size, d_model)
 
-        features = features.unsqueeze(
-            0
-        )  # shape to (1, batch_size, d_model), to match transformer input format
+        features = features.unsqueeze(0)  # (1, batch_size, d_model), to match transformer input format
 
         # target sequence embedding and positional encoding
-        target_seq = self.target_embedding(
-            target_seq
-        )  # shape to (batch_size, seq_len, d_model)
-        target_seq = self.pos_encoder(
-            target_seq.permute(1, 0, 2)
-        )  # shape to (seq_len, batch_size, d_model)
+        target_seq = self.target_embedding(target_seq)  # (batch_size, seq_len, d_model)
+        target_seq = self.pos_encoder(target_seq.permute(1, 0, 2))  # (seq_len, batch_size, d_model)
 
         tgt_key_padding_mask = target_mask == 0  # shape: (batch_size, seq_len)
 
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(
-            target_seq.size(0)
-        ).to(target_seq.device)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(target_seq.size(0)).to(
+            target_seq.device
+        )  # (seq_len, seq_len)
 
-        # transformer decoder with masked self-attention and key padding mask
         decoder_output = self.transformer_decoder(
             tgt=target_seq,
             memory=features,
@@ -176,20 +166,14 @@ class ImageToSequenceTransformer(pl.LightningModule):
         )
 
         # output prediction
-        c_pred = torch.sigmoid(
-            self.fc_c(decoder_output)
-        )  # shape: (seq_len, batch_size, 2)
-        t_pred = torch.sigmoid(
-            self.fc_t(decoder_output)
-        )  # shape: (seq_len, batch_size, 1)
-        eos_pred = torch.sigmoid(
-            self.fc_eos(decoder_output)
-        )  # shape: (seq_len, batch_size, 1)
+        c_pred = self.fc_c(decoder_output)  #  (seq_len, batch_size, 2)
+        t_pred = self.fc_t(decoder_output)  #  (seq_len, batch_size, 1)
+        eos_pred = self.fc_eos(decoder_output)  #  (seq_len, batch_size, 1)
 
         return (
-            c_pred.permute(1, 0, 2),
-            t_pred.permute(1, 0, 2),
-            eos_pred.permute(1, 0, 2),
+            c_pred.permute(1, 0, 2),  # (batch_size, seq_len, 2)
+            t_pred.permute(1, 0, 2),  # (batch_size, seq_len, 1)
+            eos_pred.permute(1, 0, 2).squeeze(-1),  # (batch_size, seq_len)
         )
 
     def _step(self, batch, batch_idx):
@@ -197,40 +181,39 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
         # Create EOS labels: 1 for the last valid token, 0 otherwise
         eos_labels = torch.zeros_like(target_mask)
-        eos_labels[
-            torch.arange(target_mask.size(0)), (target_mask.sum(dim=1) - 1).long()
-        ] = 1
+        eos_labels[torch.arange(target_mask.size(0)), (target_mask.sum(dim=1) - 1).long()] = 1
         eos_labels = eos_labels.float()
 
         # Forward pass
         c_pred, t_pred, eos_pred = self(X, target_seq, target_mask)
 
         # Compute loss
-        t_true = target_seq[:, :, 0:1]  # Extract true knots
-        c_true = target_seq[:, :, 1:3]  # Extract true coefficients
+        t_true = target_seq[:, :, 0:1]  # Extract true knots (batch_size, seq_len, 1)
+        c_true = target_seq[:, :, 1:3]  # Extract true coefficients (batch_size, seq_len, 2)
 
-        loss_t = self.criterion_t(t_pred, t_true)
-        loss_c = self.criterion_c(c_pred, c_true)
-        loss_eos = self.criterion_eos(eos_pred.squeeze(-1), eos_labels)
+        loss_t = self.criterion_t(t_pred, t_true)  # (batch_size, seq_len, 1)
+        loss_c = self.criterion_c(c_pred, c_true)  # (batch_size, seq_len, 2)
+        loss_eos = self.criterion_eos(eos_pred, eos_labels)  # (batch_size, seq_len)
 
         # Apply the mask to the losses
         loss_t = loss_t * target_mask.unsqueeze(-1)
         loss_c = loss_c * target_mask.unsqueeze(-1)
         loss_eos = loss_eos * target_mask
 
-        loss = loss_t.sum() + loss_c.sum() + loss_eos.sum()
+        loss = self.lambda_t * loss_t.sum() + self.lambda_c * loss_c.sum() + self.lambda_eos * loss_eos.sum()
 
-        self.training_step_output = [
-            dict(
-                img=X[i],
-                t_true=t_true[i],
-                t_pred=t_pred[i],
-                c_true=c_true[i],
-                c_pred=c_pred[i],
-                seq_len=target_mask.sum(dim=1)[i],
-            )
-            for i in range(5)
-        ]
+        if batch_idx == 0:
+            self.training_step_output = [
+                dict(
+                    img=X[i],
+                    t_true=t_true[i],
+                    t_pred=t_pred[i],
+                    c_true=c_true[i],
+                    c_pred=c_pred[i],
+                    seq_len=target_mask.sum(dim=1)[i],
+                )
+                for i in range(min(4, X.size(0)))
+            ]
 
         return loss_c.sum(), loss_t.sum(), loss_eos.sum(), loss
 
@@ -248,19 +231,16 @@ class ImageToSequenceTransformer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss_c, loss_t, loss_eos, loss = self._step(batch, batch_idx)
         self._log(loss_c, loss_t, loss_eos, loss, "val")
-
         return loss
 
     def inference_step(self, X):
+        self.eval()
+
         with torch.no_grad():
-            X = X.unsqueeze(0)
-            features = self.encoder(X)  # output shape: (batch_size, d_model, h, w)
+            X = X.unsqueeze(0)  # Add batch dimension
+            features = self.encoder(X)  # (batch_size, d_model)
 
-            features = features.unsqueeze(
-                0
-            )  # shape to (1, batch_size, d_model), to match transformer input format
-
-            generated_seq = torch.zeros(1, 1, 3).to(X.device)
+            generated_seq = torch.zeros(1, 1, 3).to(X.device)  # Start token or initial sequence
 
             for i in range(self.max_seq_len):
                 # target sequence embedding and positional encoding
@@ -269,28 +249,35 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
                 decoder_output = self.transformer_decoder(
                     tgt=target_seq,
-                    memory=features,
-                )
+                    memory=features.unsqueeze(0),  # (1, batch_size, d_model)
+                )  # (seq_len, 1, d_model)
 
-                decoder_output = decoder_output[-1].unsqueeze(0)
-
+                # Generate predictions for the entire sequence
                 c_pred = torch.sigmoid(self.fc_c(decoder_output))
                 t_pred = torch.sigmoid(self.fc_t(decoder_output))
-
-                combined = torch.cat([t_pred, c_pred], dim=-1).permute(1, 0, 2)
-                generated_seq = torch.cat([generated_seq, combined], dim=1)
-
                 eos_pred = torch.sigmoid(self.fc_eos(decoder_output))
-                if eos_pred > 0.5:
+
+                # Take the predictions corresponding to the last time step
+                last_c_pred = c_pred[-1].unsqueeze(0)
+                last_t_pred = t_pred[-1].unsqueeze(0)
+                last_eos_pred = eos_pred[-1].unsqueeze(0)
+
+                combined = torch.cat([last_t_pred, last_c_pred], dim=-1)  # (1, 1, 3)
+                generated_seq = torch.cat([generated_seq, combined], dim=1)  # (1, seq_len, 3)
+
+                if last_eos_pred.item() > 0.5 and i > 2:
                     break
 
-            generated_seq = generated_seq.squeeze(0)
-            t_pred = generated_seq[:, 0]
-            c_pred = generated_seq[:, 1:]
-            return dict(t=t_pred, c=c_pred)
+            generated_seq = generated_seq.squeeze(0)[1:]  # Remove the initial token
+            t_pred = generated_seq[:, 0]  # (seq_len,)
+            c_pred = generated_seq[:, 1:]  # (seq_len, 2)
+
+        self.train()
+
+        return dict(t=t_pred, c=c_pred)
 
     def configure_optimizers(self):
-        optimizer = optim.Adam(self.parameters(), lr=1e-5)
+        optimizer = optim.NAdam(self.parameters(), lr=1e-5)
         return optimizer
 
 
@@ -351,14 +338,10 @@ def main():
     from guide3d.dataset.image.spline import Guide3D
 
     # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
-    dataset = Guide3D(
-        root=Path.home() / "data/segment-real/", image_transform=vit_transform
-    )
+    dataset = Guide3D(root=Path.home() / "data/segment-real/", image_transform=vit_transform)
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=True)
 
-    model = ImageToSequenceTransformer(
-        max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMG_SIZE
-    )
+    model = ImageToSequenceTransformer(max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMG_SIZE)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop
