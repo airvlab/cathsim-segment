@@ -1,0 +1,88 @@
+{
+    "os": "Linux-6.0.12-76060012-generic-x86_64-with-glibc2.31",
+    "python": "3.9.19",
+    "heartbeatAt": "2024-08-14T09:29:59.612679",
+    "startedAt": "2024-08-14T09:29:58.704504",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/home/admin/cathsim-segment/src/cathseg/mobile_unet/train.py",
+    "codePathLocal": "src/cathseg/mobile_unet/train.py",
+    "codePath": "src/cathseg/mobile_unet/train.py",
+    "git": {
+        "remote": "https://github.com/airvlab/cathsim-segment",
+        "commit": "d698de80d154361982eeb7987e726e3ea50e0cb4"
+    },
+    "email": null,
+    "root": "/home/admin/cathsim-segment",
+    "host": "pop-os",
+    "username": "admin",
+    "executable": "/home/admin/.miniconda3/envs/segmentation/bin/python",
+    "cpu_count": 4,
+    "cpu_count_logical": 8,
+    "cpu_freq": {
+        "current": 2163.7018749999997,
+        "min": 800.0,
+        "max": 3900.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 2194.734,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 2194.774,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 2194.713,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 2194.717,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 2563.883,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 2194.776,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 2551.35,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 1100.0,
+            "min": 800.0,
+            "max": 3900.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 224.22959518432617,
+            "used": 65.41905975341797
+        }
+    },
+    "gpu": "NVIDIA GeForce GTX 1080 Ti",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce GTX 1080 Ti",
+            "memory_total": 11811160064
+        }
+    ],
+    "memory": {
+        "total": 15.577621459960938
+    }
+}

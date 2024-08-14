@@ -1,0 +1,88 @@
+{
+    "os": "Linux-6.0.12-76060012-generic-x86_64-with-glibc2.31",
+    "python": "3.9.19",
+    "heartbeatAt": "2024-08-09T15:49:48.838777",
+    "startedAt": "2024-08-09T15:49:47.933442",
+    "docker": null,
+    "cuda": null,
+    "args": [],
+    "state": "running",
+    "program": "/home/admin/cathsim-segment/src/cathseg/mobile_unet/train.py",
+    "codePathLocal": "src/cathseg/mobile_unet/train.py",
+    "codePath": "src/cathseg/mobile_unet/train.py",
+    "git": {
+        "remote": "https://github.com/airvlab/cathsim-segment",
+        "commit": "d698de80d154361982eeb7987e726e3ea50e0cb4"
+    },
+    "email": null,
+    "root": "/home/admin/cathsim-segment",
+    "host": "pop-os",
+    "username": "admin",
+    "executable": "/home/admin/.miniconda3/envs/segmentation/bin/python",
+    "cpu_count": 4,
+    "cpu_count_logical": 8,
+    "cpu_freq": {
+        "current": 3235.129,
+        "min": 800.0,
+        "max": 3900.0
+    },
+    "cpu_freq_per_core": [
+        {
+            "current": 3685.346,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 3580.795,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 800.0,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 3682.262,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 3647.105,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 3292.151,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 3625.908,
+            "min": 800.0,
+            "max": 3900.0
+        },
+        {
+            "current": 3567.465,
+            "min": 800.0,
+            "max": 3900.0
+        }
+    ],
+    "disk": {
+        "/": {
+            "total": 224.22959518432617,
+            "used": 65.18655395507812
+        }
+    },
+    "gpu": "NVIDIA GeForce GTX 1080 Ti",
+    "gpu_count": 1,
+    "gpu_devices": [
+        {
+            "name": "NVIDIA GeForce GTX 1080 Ti",
+            "memory_total": 11811160064
+        }
+    ],
+    "memory": {
+        "total": 15.577682495117188
+    }
+}
