@@ -24,10 +24,14 @@ dependencies = [
     "guide3d@git+https://github.com/airvlab/guide3d.git",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
 
 [project.scripts]
 run_env = "cathsim.console:cmd_run_env"
 visualize_agent = "cathsim.console:cmd_visualize_agent"
 train = "cathsim.console:cmd_train"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120

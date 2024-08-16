@@ -54,6 +54,9 @@ class ViTEncoder(nn.Module):
     def __init__(self, n_channels, image_shape, output_dim=512, pretrained=True):
         super(ViTEncoder, self).__init__()
 
+        # Add avg pooling as first layer to ensure arbitrary sizes are mapped to ViT input size.
+        self.initial_pooling = nn.AdaptiveAvgPool2d((224, 224))
+
         # Load the pretrained ViT model
         if pretrained:
             self.vit = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
@@ -70,9 +73,6 @@ class ViTEncoder(nn.Module):
 
         # Remove the classification head
         self.vit.heads = nn.Identity()
-
-        # Add avg pooling as first layer to ensure arbitrary sizes are mapped to ViT input size.
-        self.initial_pooling = nn.AdaptiveAvgPool2d((224, 224))
 
         # Add a projection layer to match the desired output dimension if specified
         self.output_dim = output_dim
@@ -231,6 +231,11 @@ class ImageToSequenceTransformer(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         loss_c, loss_t, loss_eos, loss = self._step(batch, batch_idx)
         self._log(loss_c, loss_t, loss_eos, loss, "val")
+        return loss
+
+    def test_step(self, batch, batch_idx):
+        generated = self.inference_step(batch[0], batch_idx)
+        loss = 0
         return loss
 
     def inference_step(self, X):

@@ -12,6 +12,7 @@ import torchvision.transforms as transforms
 from cathseg.transformer.network import ImageToSequenceTransformer as Model
 from guide3d.dataset.image.spline import Guide3D
 from pytorch_lightning import Callback
+from pytorch_lightning.callbacks import ModelCheckpoint
 from scipy.interpolate import splev
 
 import wandb
@@ -25,6 +26,7 @@ torch.set_float32_matmul_precision("high")
 
 IMAGE_SIZE = 1024
 N_CHANNELS = 1
+MODEL_VERSION = "1"
 
 
 vit_transform = transforms.Compose(
@@ -202,15 +204,35 @@ def train():
         add_init_token=True,
         split="val",
     )
-    train_dl = data.DataLoader(train_ds, batch_size=8, shuffle=True, num_workers=os.cpu_count() // 2)
+    train_dl = data.DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=os.cpu_count() // 2)
     val_dl = data.DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=os.cpu_count() // 2)
     model = Model(max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
     trainer = pl.Trainer(
         max_epochs=200,
         logger=wandb_logger,
-        callbacks=[ImageCallbackLogger()],
+        callbacks=[
+            ImageCallbackLogger(),
+            ModelCheckpoint(f"models/{MODEL_VERSION}", monitor="val/loss", mode="min"),
+        ],
     )
     trainer.fit(model, train_dl, val_dl)
+
+
+def test():
+    root = Path.home() / "data/segment-real/"
+    test_ds = Guide3D(
+        root=root,
+        annotations_file="sphere_wo_reconstruct.json",
+        image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
+        add_init_token=True,
+        split="train",
+    )
+
+    model = Model(max_seq_len=test_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
+    trainer = pl.Trainer()
+    trainer.test(model, test_ds, ckpt_path="lightning_logs/version_0/checkpoints/epoch=74-step=61425.ckpt")
 
 
 def dummy_run():
@@ -251,3 +273,4 @@ def dummy_run_2():
 if __name__ == "__main__":
     # dummy_run_2()
     train()
+    # test()
