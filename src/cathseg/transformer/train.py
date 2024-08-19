@@ -14,6 +14,7 @@ from guide3d.dataset.image.spline import Guide3D
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint
 from scipy.interpolate import splev
+from tqdm import tqdm
 
 import wandb
 
@@ -155,21 +156,23 @@ class ImageCallbackLogger(Callback):
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if self.epoch % self.interval == 0:
             instances = pl_module.training_step_output
-            for i, instance in enumerate(instances):
+            table = wandb.Table(columns = ["GT", "Preds", "Inference"])
+
+            for i, instance in tqdm(enumerate(instances)):
                 generated = pl_module.inference_step(instance["img"])
                 instances[i]["c_gen"] = generated["c"]
                 instances[i]["t_gen"] = generated["t"]
 
-            imgs = [self.make_images(instance) for instance in instances]
+            # Pass through to make images for logging. Do this row-wise.
+            for instance in tqdm(instances):
+                img_true, img_pred, img_gen = self.make_images(instance)
 
-            columns = ["GT", "Pred", "Inference"]
-            data = []
-            for row in imgs:
-                data.append([wandb.Image(img) for img in row])
+                table.add_data(wandb.Image(img_true[:, :, 0]),
+                               wandb.Image(img_pred[:, :, 0]),
+                               wandb.Image(img_gen[:, :, 0]))
 
-            table = wandb.Table(columns, data)
 
-            trainer.logger.experiment.log({"Images": table})
+            trainer.logger.experiment.log({"img_samples": table})
 
             # trainer.logger.log_image(
             #     key=f"Images_{i}",
