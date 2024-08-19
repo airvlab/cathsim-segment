@@ -45,19 +45,23 @@ vit_transform = transforms.Compose(
 
 
 def c_transform(c):
-    return c / IMAGE_SIZE
+    max_val = IMAGE_SIZE
+    min_val = -0.6102361976879171
+    return (c - min_val) / (max_val - min_val)
 
 
 def t_transform(t):
-    return t / 2000
+    return t / 1500
 
 
 def c_untransform(c):
-    return c * IMAGE_SIZE
+    max_val = IMAGE_SIZE
+    min_val = -0.6102361976879171
+    return c * (max_val + min_val) + min_val
 
 
 def t_untransform(t):
-    return t * 2000
+    return t * 1500
 
 
 def unnorm(img):
@@ -114,11 +118,11 @@ class ImageCallbackLogger(Callback):
         def unpack_instance(instance):
             img = instance["img"].detach().cpu().numpy()
             seq_len = instance["seq_len"].detach().cpu().numpy().astype(int)
-            c_pred = instance["c_pred"].detach().cpu().numpy()[1:seq_len]
-            c_true = instance["c_true"].detach().cpu().numpy()[1:seq_len]
+            c_pred = instance["c_pred"].detach().cpu().numpy()[:seq_len]
+            c_true = instance["c_true"].detach().cpu().numpy()[:seq_len]
             c_gen = instance["c_gen"].detach().cpu().numpy()  # alredy in shape
-            t_pred = instance["t_pred"].detach().cpu().numpy()[1:seq_len]
-            t_true = instance["t_true"].detach().cpu().numpy()[1:seq_len]
+            t_pred = instance["t_pred"].detach().cpu().numpy()[:seq_len]
+            t_true = instance["t_true"].detach().cpu().numpy()[:seq_len]
             t_gen = instance["t_gen"].detach().cpu().numpy()  # alredy in shape
             return img, c_pred, c_true, c_gen, t_pred, t_true, t_gen
 
@@ -149,14 +153,12 @@ class ImageCallbackLogger(Callback):
         img_pred = self.make_points(img.copy(), c_pred, t_pred, (0, 255, 0))
         img_gen = self.make_points(img.copy(), c_gen, t_gen, (0, 0, 255))
 
-        # plot_images(img_true, img_pred, img_gen)
-
         return [img_true, img_pred, img_gen]
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if self.epoch % self.interval == 0:
             instances = pl_module.training_step_output
-            table = wandb.Table(columns = ["GT", "Preds", "Inference"])
+            table = wandb.Table(columns=["GT", "Preds", "Inference"])
 
             for i, instance in tqdm(enumerate(instances)):
                 generated = pl_module.inference_step(instance["img"])
@@ -167,25 +169,18 @@ class ImageCallbackLogger(Callback):
             for instance in tqdm(instances):
                 img_true, img_pred, img_gen = self.make_images(instance)
 
-                table.add_data(wandb.Image(img_true[:, :, 0]),
-                               wandb.Image(img_pred[:, :, 0]),
-                               wandb.Image(img_gen[:, :, 0]))
-
+                table.add_data(
+                    wandb.Image(img_true[:, :, 0]), wandb.Image(img_pred[:, :, 0]), wandb.Image(img_gen[:, :, 0])
+                )
 
             trainer.logger.experiment.log({"img_samples": table})
-
-            # trainer.logger.log_image(
-            #     key=f"Images_{i}",
-            #     images=img,
-            #     caption=["GT", "Pred", "Inference"],
-            # )
 
         self.epoch += 1
 
 
 def train():
     wandb_logger = pl.loggers.WandbLogger(
-        project="transformer",
+        project="transformer-2",
         log_model=True,
     )
     root = Path.home() / "data/segment-real/"

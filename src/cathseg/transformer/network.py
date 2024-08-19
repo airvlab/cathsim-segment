@@ -11,7 +11,7 @@ from torchvision.transforms import transforms
 
 MAX_LEN = 20
 N_CHANNELS = 1
-IMG_SIZE = 1024
+IMAGE_SIZE = 1024
 
 vit_transform = transforms.Compose(
     [
@@ -25,6 +25,31 @@ vit_transform = transforms.Compose(
         ),
     ]
 )
+
+
+def c_transform(c):
+    max_val = IMAGE_SIZE
+    min_val = -0.6102361976879171
+    return (c - min_val) / (max_val - min_val)
+
+
+def t_transform(t):
+    return t / 1500
+
+
+def c_untransform(c):
+    max_val = IMAGE_SIZE
+    min_val = -0.6102361976879171
+    return c * (max_val + min_val) + min_val
+
+
+def t_untransform(t):
+    return t * 1500
+
+
+def unnorm(img):
+    img = img * 0.5 + 0.5
+    return img
 
 
 class PositionalEncoding(nn.Module):
@@ -47,6 +72,31 @@ class PositionalEncoding(nn.Module):
 
     def forward(self, x):
         x = x + self.pe[: x.size(0), :]
+        return self.dropout(x)
+
+
+class PositionalEncodingBFirst(nn.Module):
+    def __init__(self, d_model, max_len=5000, dropout=0.1):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # shape (1, max_len, d_model)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x):
+        r"""Inputs of forward function
+        Args:
+            x: the sequence fed to the positional encoder model (required).
+        Shape:
+            x: [batch size, sequence length, embed dim]
+            output: [batch size, sequence length, embed dim]
+        """
+        x = x + self.pe[:, : x.size(1), :]  # Adjust indexing for batch-first input
         return self.dropout(x)
 
 
@@ -106,6 +156,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
         dropout: float = 0.1,
     ):
         super(ImageToSequenceTransformer, self).__init__()
+        self.save_hyperparameters()
 
         self.encoder = ViTEncoder(n_channels, img_size, d_model, pretrained=True)
 
@@ -152,11 +203,9 @@ class ImageToSequenceTransformer(pl.LightningModule):
         target_seq = self.target_embedding(target_seq)  # (batch_size, seq_len, d_model)
         target_seq = self.pos_encoder(target_seq.permute(1, 0, 2))  # (seq_len, batch_size, d_model)
 
-        tgt_key_padding_mask = target_mask == 0  # shape: (batch_size, seq_len)
+        tgt_key_padding_mask = target_mask.to(dtype=torch.float)
 
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(target_seq.size(0)).to(
-            target_seq.device
-        )  # (seq_len, seq_len)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(target_seq.size(0)).to(device=target_seq.device)
 
         decoder_output = self.transformer_decoder(
             tgt=target_seq,
@@ -187,19 +236,30 @@ class ImageToSequenceTransformer(pl.LightningModule):
         # Forward pass
         c_pred, t_pred, eos_pred = self(X, target_seq, target_mask)
 
-        # Compute loss
-        t_true = target_seq[:, :, 0:1]  # Extract true knots (batch_size, seq_len, 1)
-        c_true = target_seq[:, :, 1:3]  # Extract true coefficients (batch_size, seq_len, 2)
+        # The first token in target_seq is used to generate the first prediction
+        t_true = target_seq[:, 1:, 0:1]  # True tokens after the first (excluding SOS)
+        c_true = target_seq[:, 1:, 1:3]  # True coefficients after the first (excluding SOS)
+        eos_labels = target_seq[:, 1:]  # True coefficients after the first (excluding SOS)
 
-        loss_t = self.criterion_t(t_pred, t_true)  # (batch_size, seq_len, 1)
-        loss_c = self.criterion_c(c_pred, c_true)  # (batch_size, seq_len, 2)
-        loss_eos = self.criterion_eos(eos_pred, eos_labels)  # (batch_size, seq_len)
+        # Align predictions with the true sequence (start from first predicted token)
+        t_pred = t_pred[:, :-1, :]  # Exclude the last prediction since it's not matched by target
+        c_pred = c_pred[:, :-1, :]
+        eos_pred = eos_pred[:, :-1]
+
+        # Adjust the mask to match the sequence length
+        target_mask = target_mask[:, 1:]
+
+        # Compute losses
+        loss_t = self.criterion_t(t_pred, t_true)  # (batch_size, seq_len-1, 1)
+        loss_c = self.criterion_c(c_pred, c_true)  # (batch_size, seq_len-1, 2)
+        loss_eos = self.criterion_eos(eos_pred, eos_labels[:, 1:])  # (batch_size, seq_len-1)
 
         # Apply the mask to the losses
         loss_t = loss_t * target_mask.unsqueeze(-1)
         loss_c = loss_c * target_mask.unsqueeze(-1)
         loss_eos = loss_eos * target_mask
 
+        # Compute the total loss as a weighted sum
         loss = self.lambda_t * loss_t.sum() + self.lambda_c * loss_c.sum() + self.lambda_eos * loss_eos.sum()
 
         if batch_idx == 0:
@@ -233,6 +293,9 @@ class ImageToSequenceTransformer(pl.LightningModule):
         self._log(loss_c, loss_t, loss_eos, loss, "val")
         return loss
 
+    def predict_step(self, batch):
+        pass
+
     def test_step(self, batch, batch_idx):
         generated = self.inference_step(batch[0], batch_idx)
         loss = 0
@@ -250,7 +313,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
             for i in range(self.max_seq_len):
                 # target sequence embedding and positional encoding
                 target_seq = self.target_embedding(generated_seq)
-                target_seq = self.pos_encoder(target_seq.permute(1, 0, 2))
+                target_seq = self.pos_encoder(target_seq.permute(1, 0, 2))  # (seq_len, 1, d_model)
 
                 decoder_output = self.transformer_decoder(
                     tgt=target_seq,
@@ -343,10 +406,17 @@ def main():
     from guide3d.dataset.image.spline import Guide3D
 
     # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
-    dataset = Guide3D(root=Path.home() / "data/segment-real/", image_transform=vit_transform)
-    dataloader = data.DataLoader(dataset, batch_size=8, shuffle=True)
+    dataset = Guide3D(
+        root=Path.home() / "data/segment-real/",
+        image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
+        add_init_token=True,
+    )
 
-    model = ImageToSequenceTransformer(max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMG_SIZE)
+    dataloader = data.DataLoader(dataset, batch_size=8, shuffle=False)
+
+    model = ImageToSequenceTransformer(max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMAGE_SIZE)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop
@@ -368,6 +438,10 @@ def main():
             optimizer.step()
 
             running_loss += loss.item()
+
+            if i == 3:
+                exit()
+            exit()
 
         print(f"Epoch [{epoch+1}/100], Loss: {running_loss/len(dataloader)}")
 
