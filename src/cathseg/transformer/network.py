@@ -285,6 +285,10 @@ class ImageToSequenceTransformer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         loss_c, loss_t, loss_eos, loss = self._step(batch, batch_idx)
         self._log(loss_c, loss_t, loss_eos, loss, "train")
+
+        # Gradient clipping to stablise training as we are using transformer.
+        nn.utils.clip_grad_norm_(self.parameters(), max_norm = 1.0)
+
         return loss
 
     def validation_step(self, batch, batch_idx):
