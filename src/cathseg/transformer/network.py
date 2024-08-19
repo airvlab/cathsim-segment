@@ -194,6 +194,8 @@ class ImageToSequenceTransformer(pl.LightningModule):
         self.training_step_output = None
         self.max_seq_len = max_seq_len
 
+        self.init_token = torch.zeros(1, 3)  # (seq_len, dim)
+
     def forward(self, x, target_seq, target_mask):
         features = self.encoder(x)  #  (batch_size, d_model)
 
@@ -220,13 +222,22 @@ class ImageToSequenceTransformer(pl.LightningModule):
         eos_pred = self.fc_eos(decoder_output)  #  (seq_len, batch_size, 1)
 
         return (
-            c_pred.permute(1, 0, 2),  # (batch_size, seq_len, 2)
             t_pred.permute(1, 0, 2),  # (batch_size, seq_len, 1)
+            c_pred.permute(1, 0, 2),  # (batch_size, seq_len, 2)
             eos_pred.permute(1, 0, 2).squeeze(-1),  # (batch_size, seq_len)
         )
 
     def _step(self, batch, batch_idx):
         X, target_seq, target_mask = batch
+        # print(target_mask.sum(-1))
+        # exit()
+
+        ## PREPARE TARGET DATA
+        init_token = self.init_token.expand(target_seq.size(0), -1, -1).to(device=target_seq.device)
+        target_seq = torch.cat([init_token, target_seq], 1)
+
+        input_seq = target_seq[:, :-1, :]
+        target_seq = target_seq[:, 1:, :]
 
         # Create EOS labels: 1 for the last valid token, 0 otherwise
         eos_labels = torch.zeros_like(target_mask)
@@ -234,25 +245,18 @@ class ImageToSequenceTransformer(pl.LightningModule):
         eos_labels = eos_labels.float()
 
         # Forward pass
-        c_pred, t_pred, eos_pred = self(X, target_seq, target_mask)
+        t_pred, c_pred, eos_pred = self(X, input_seq, target_mask)
+        # print(target_seq[5, 1:, :])
+        # print(eos_labels[5])
+        # exit()
 
-        # The first token in target_seq is used to generate the first prediction
-        t_true = target_seq[:, 1:, 0:1]  # True tokens after the first (excluding SOS)
-        c_true = target_seq[:, 1:, 1:3]  # True coefficients after the first (excluding SOS)
-        eos_labels = target_seq[:, 1:]  # True coefficients after the first (excluding SOS)
-
-        # Align predictions with the true sequence (start from first predicted token)
-        t_pred = t_pred[:, :-1, :]  # Exclude the last prediction since it's not matched by target
-        c_pred = c_pred[:, :-1, :]
-        eos_pred = eos_pred[:, :-1]
-
-        # Adjust the mask to match the sequence length
-        target_mask = target_mask[:, 1:]
+        t_true = target_seq[:, :, 0:1]
+        c_true = target_seq[:, :, 1:3]
 
         # Compute losses
-        loss_t = self.criterion_t(t_pred, t_true)  # (batch_size, seq_len-1, 1)
-        loss_c = self.criterion_c(c_pred, c_true)  # (batch_size, seq_len-1, 2)
-        loss_eos = self.criterion_eos(eos_pred, eos_labels[:, 1:])  # (batch_size, seq_len-1)
+        loss_t = self.criterion_t(t_pred, t_true)  # (batch_size, seq_len, 1)
+        loss_c = self.criterion_c(c_pred, c_true)  # (batch_size, seq_len, 2)
+        loss_eos = self.criterion_eos(eos_pred, eos_labels)  # (batch_size, seq_len)
 
         # Apply the mask to the losses
         loss_t = loss_t * target_mask.unsqueeze(-1)
@@ -382,11 +386,13 @@ def plot_instance(instance):
     )
 
     seq_len = target_mask.sum().astype(int)
-    target_seq = target_seq[1:seq_len]
+    target_seq = target_seq[:seq_len]
 
     t = target_seq[:, 0]
     t = np.concatenate([np.zeros((4,)), t])
+    t = t_untransform(t)
     c = target_seq[:, 1:].T
+    c = c_untransform(c)
 
     sample_idx = np.linspace(0, t[-1], 40)
     samples = splev(sample_idx, (t, c, 3))
@@ -411,7 +417,6 @@ def main():
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
-        add_init_token=True,
     )
 
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=False)
@@ -427,8 +432,8 @@ def main():
             img, target_seq, target_mask = batch
             # plot_instance(tuple(x[0] for x in batch))
 
-            model.inference_step(img[0])
-            exit()
+            # model.inference_step(img[0])
+            # exit()
 
             loss = model.training_step(batch, i)
 
@@ -439,9 +444,9 @@ def main():
 
             running_loss += loss.item()
 
-            if i == 3:
-                exit()
-            exit()
+            # if i == 3:
+            #     exit()
+            # exit()
 
         print(f"Epoch [{epoch+1}/100], Loss: {running_loss/len(dataloader)}")
 

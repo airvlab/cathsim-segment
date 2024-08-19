@@ -27,7 +27,7 @@ torch.set_float32_matmul_precision("high")
 
 IMAGE_SIZE = 1024
 N_CHANNELS = 1
-MODEL_VERSION = "1"
+MODEL_VERSION = "2"
 
 
 vit_transform = transforms.Compose(
@@ -190,7 +190,7 @@ def train():
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
-        add_init_token=True,
+        # add_init_token=True,
         split="train",
     )
     val_ds = Guide3D(
@@ -199,11 +199,11 @@ def train():
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
-        add_init_token=True,
+        # add_init_token=True,
         split="val",
     )
     train_dl = data.DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=os.cpu_count() // 2)
-    val_dl = data.DataLoader(val_ds, batch_size=32, shuffle=False, num_workers=os.cpu_count() // 2)
+    val_dl = data.DataLoader(val_ds, batch_size=32, shuffle=True, num_workers=os.cpu_count() // 2)
     model = Model(max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
     trainer = pl.Trainer(
         max_epochs=200,
