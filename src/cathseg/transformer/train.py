@@ -133,7 +133,7 @@ class ImageCallbackLogger(Callback):
         c_gen = c_untransform(c_gen).T
         t_pred = t_untransform(t_pred).flatten()
         t_true = t_untransform(t_true).flatten()
-        t_gen = t_untransform(t_gen)
+        t_gen = t_untransform(t_gen).flatten()
 
         if img.shape[0] == 1:
             img = img[0]
