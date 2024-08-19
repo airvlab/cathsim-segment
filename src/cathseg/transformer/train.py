@@ -149,9 +149,9 @@ class ImageCallbackLogger(Callback):
         img = img * 255
         img = img.astype(np.uint8)
 
-        img_true = self.make_points(img.copy(), c_true, t_true, (255, 0, 0))
-        img_pred = self.make_points(img.copy(), c_pred, t_pred, (0, 255, 0))
-        img_gen = self.make_points(img.copy(), c_gen, t_gen, (0, 0, 255))
+        img_true = self.make_points(img.copy(), c_true, t_true, (255, 255, 255))
+        img_pred = self.make_points(img.copy(), c_pred, t_pred, (255, 255, 255))
+        img_gen = self.make_points(img.copy(), c_gen, t_gen, (255, 255, 255))
 
         return [img_true, img_pred, img_gen]
 

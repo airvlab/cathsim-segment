@@ -228,9 +228,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
         )
 
     def _step(self, batch, batch_idx):
-        X, target_seq, target_mask = batch
-        # print(target_mask.sum(-1))
-        # exit()
+        imgs, target_seq, target_mask = batch
 
         ## PREPARE TARGET DATA
         init_token = self.init_token.expand(target_seq.size(0), -1, -1).to(device=target_seq.device)
@@ -245,10 +243,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
         eos_labels = eos_labels.float()
 
         # Forward pass
-        t_pred, c_pred, eos_pred = self(X, input_seq, target_mask)
-        # print(target_seq[5, 1:, :])
-        # print(eos_labels[5])
-        # exit()
+        t_pred, c_pred, eos_pred = self(imgs, input_seq, target_mask)
 
         t_true = target_seq[:, :, 0:1]
         c_true = target_seq[:, :, 1:3]
@@ -269,14 +264,14 @@ class ImageToSequenceTransformer(pl.LightningModule):
         if batch_idx == 0:
             self.training_step_output = [
                 dict(
-                    img=X[i],
+                    img=imgs[i],
                     t_true=t_true[i],
                     t_pred=t_pred[i],
                     c_true=c_true[i],
                     c_pred=c_pred[i],
                     seq_len=target_mask.sum(dim=1)[i],
                 )
-                for i in range(min(4, X.size(0)))
+                for i in range(min(4, imgs.size(0)))
             ]
 
         return loss_c.sum(), loss_t.sum(), loss_eos.sum(), loss
@@ -340,9 +335,9 @@ class ImageToSequenceTransformer(pl.LightningModule):
                 if last_eos_pred.item() > 0.5 and i > 2:
                     break
 
-            generated_seq = generated_seq.squeeze(0)[1:]  # Remove the initial token
-            t_pred = generated_seq[:, 0]  # (seq_len,)
-            c_pred = generated_seq[:, 1:]  # (seq_len, 2)
+            generated_seq = generated_seq[0, 1:, :]  # Remove the initial token
+            t_pred = generated_seq[:, 0:1]  # (seq_len,)
+            c_pred = generated_seq[:, 1:3]  # (seq_len, 2)
 
         self.train()
 
