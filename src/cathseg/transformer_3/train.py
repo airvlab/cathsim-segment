@@ -18,7 +18,8 @@ from tqdm import tqdm
 
 import wandb
 
-torch.manual_seed(0)
+
+pl.seed_everything(0, workers = True)
 
 wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
