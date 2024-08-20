@@ -349,7 +349,9 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = optim.NAdam(self.parameters(), lr=1e-5)
-        return optimizer
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = 70, eta_min = 1e-7)
+
+        return [optimizer], [scheduler]
 
 
 def visualize_positional_encoding(d_model, max_len):
