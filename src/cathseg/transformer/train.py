@@ -196,6 +196,8 @@ def train():
         log_model=True,
     )
     root = Path.home() / "data/segment-real/"
+    lr_monitor = LearningRateMonitor(logging_interval="step")
+
     train_ds = Guide3D(
         root=root,
         annotations_file="sphere_wo_reconstruct.json",
