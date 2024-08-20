@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 import torch
 import torch.utils.data as data
 import torchvision.transforms as transforms
-from cathseg.transformer.network import ImageToSequenceTransformer as Model
+from cathseg.transformer_2.network import ImageToSequenceTransformer as Model
 from guide3d.dataset.image.spline import Guide3D
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -27,7 +27,7 @@ torch.set_float32_matmul_precision("high")
 
 IMAGE_SIZE = 1024
 N_CHANNELS = 1
-MODEL_VERSION = "2"
+MODEL_VERSION = "5"
 
 
 vit_transform = transforms.Compose(
@@ -44,23 +44,26 @@ vit_transform = transforms.Compose(
 )
 
 
-def c_transform(c):
-    max_val = IMAGE_SIZE
-    min_val = -0.6102361976879171
-    return (c - min_val) / (max_val - min_val)
+class EncoderDecoder:
+    def __init__(self, dataset):
+        self.dataset = dataset
 
 
-def t_transform(t):
+def c_transform(c, c_min, c_max):
+    c_max = IMAGE_SIZE
+    return (c - c_min) / (c_max - c_min)
+
+
+def t_transform(t, t_min=None, t_max=None):
     return t / 1500
 
 
-def c_untransform(c):
-    max_val = IMAGE_SIZE
-    min_val = -0.6102361976879171
-    return c * (max_val + min_val) + min_val
+def c_untransform(c, c_min, c_max):
+    c_max = IMAGE_SIZE
+    return c * (c_max + c_min) + c_min
 
 
-def t_untransform(t):
+def t_untransform(t, t_min=None, t_max=None):
     return t * 1500
 
 
@@ -120,20 +123,21 @@ class ImageCallbackLogger(Callback):
             seq_len = instance["seq_len"].detach().cpu().numpy().astype(int)
             c_pred = instance["c_pred"].detach().cpu().numpy()[:seq_len]
             c_true = instance["c_true"].detach().cpu().numpy()[:seq_len]
-            c_gen = instance["c_gen"].detach().cpu().numpy()  # alredy in shape
+            c_gen = instance["c_gen"].detach().cpu().numpy()  # already in shape
             t_pred = instance["t_pred"].detach().cpu().numpy()[:seq_len]
             t_true = instance["t_true"].detach().cpu().numpy()[:seq_len]
-            t_gen = instance["t_gen"].detach().cpu().numpy()  # alredy in shape
+            t_gen = instance["t_gen"].detach().cpu().numpy()  # already in shape
+
             return img, c_pred, c_true, c_gen, t_pred, t_true, t_gen
 
         img, c_pred, c_true, c_gen, t_pred, t_true, t_gen = unpack_instance(instance)
         img = unnorm(img)
-        c_pred = c_untransform(c_pred).T
-        c_true = c_untransform(c_true).T
-        c_gen = c_untransform(c_gen).T
-        t_pred = t_untransform(t_pred).flatten()
-        t_true = t_untransform(t_true).flatten()
-        t_gen = t_untransform(t_gen).flatten()
+        c_pred = c_untransform(c_pred, self.dataset.c_min, self.dataset.c_max).T
+        c_true = c_untransform(c_true, self.dataset.c_min, self.dataset.c_max).T
+        c_gen = c_untransform(c_gen, self.dataset.c_min, self.dataset.c_max).T
+        t_pred = t_untransform(t_pred, None, None).flatten()
+        t_true = t_untransform(t_true, None, None).flatten()
+        t_gen = t_untransform(t_gen, None, None)
 
         if img.shape[0] == 1:
             img = img[0]
@@ -159,6 +163,14 @@ class ImageCallbackLogger(Callback):
         if self.epoch % self.interval == 0:
             instances = pl_module.training_step_output
             table = wandb.Table(columns=["GT", "Preds", "Inference"])
+            self.dataset = None
+            for loader in [trainer.train_dataloader, trainer.val_dataloaders, trainer.test_dataloaders]:
+                if isinstance(loader, list):
+                    loader = loader[0]
+                if loader.dataset is None:
+                    continue
+                self.dataset = loader.dataset
+                break
 
             for i, instance in tqdm(enumerate(instances)):
                 generated = pl_module.inference_step(instance["img"])
@@ -180,7 +192,7 @@ class ImageCallbackLogger(Callback):
 
 def train():
     wandb_logger = pl.loggers.WandbLogger(
-        project="transformer-2",
+        project="transformer-3",
         log_model=True,
     )
     root = Path.home() / "data/segment-real/"
@@ -190,6 +202,8 @@ def train():
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
+        c_untransform=c_untransform,
+        t_untransform=t_untransform,
         # add_init_token=True,
         split="train",
     )
@@ -199,6 +213,8 @@ def train():
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
+        c_untransform=c_untransform,
+        t_untransform=t_untransform,
         # add_init_token=True,
         split="val",
     )
@@ -254,6 +270,8 @@ def dummy_run_2():
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
+        c_untransform=c_untransform,
+        t_untransform=t_untransform,
         add_init_token=True,
         split="train",
     )
