@@ -287,7 +287,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
         self._log(loss_c, loss_t, loss_eos, loss, "train")
 
         # Gradient clipping to stablise training as we are using transformer.
-        nn.utils.clip_grad_norm_(self.parameters(), max_norm = 1.0)
+        nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
 
         return loss
 
@@ -324,9 +324,9 @@ class ImageToSequenceTransformer(pl.LightningModule):
                 )  # (seq_len, 1, d_model)
 
                 # Generate predictions for the entire sequence
-                c_pred = torch.sigmoid(self.fc_c(decoder_output))
-                t_pred = torch.sigmoid(self.fc_t(decoder_output))
-                eos_pred = torch.sigmoid(self.fc_eos(decoder_output))
+                c_pred = self.fc_c(decoder_output)
+                t_pred = self.fc_t(decoder_output)
+                eos_pred = self.fc_eos(decoder_output)
 
                 # Take the predictions corresponding to the last time step
                 last_c_pred = c_pred[-1].unsqueeze(0)
