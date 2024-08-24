@@ -13,6 +13,7 @@ from cathseg.transformer_3.network import ImageToSequenceTransformer as Model
 from guide3d.dataset.image.spline import Guide3D
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
 from scipy.interpolate import splev
 from tqdm import tqdm
 
@@ -226,6 +227,7 @@ def train():
         callbacks=[
             ImageCallbackLogger(),
             ModelCheckpoint(f"models/{MODEL_VERSION}", monitor="val/loss", mode="min"),
+            LearningRateMonitor()
         ],
     )
     trainer.fit(model, train_dl, val_dl)
