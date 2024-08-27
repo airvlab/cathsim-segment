@@ -1,12 +1,16 @@
+import os
 from pathlib import Path
 
+import cathseg.utils as utils
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 import pytorch_lightning as pl
 import torch
-from cathseg.dataset import Guide3D, Guide3DModule
+import torch.utils.data as data
+import torchvision.transforms as transforms
 from cathseg.transformer_2.network import ImageToSequenceTransformer as Model
+from guide3d.dataset.image.spline import Guide3D
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint
 from scipy.interpolate import splev
@@ -15,27 +19,50 @@ from tqdm import tqdm
 import wandb
 
 torch.manual_seed(0)
-torch.set_float32_matmul_precision("high")
 
 wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
+torch.set_float32_matmul_precision("high")
 
 IMAGE_SIZE = 1024
 N_CHANNELS = 1
-MODEL_VERSION = "1"
-PROJECT = "transformer-predict"
+MODEL_VERSION = "20"
 
 
-def c_untransform(c):
-    return c * IMAGE_SIZE
+vit_transform = transforms.Compose(
+    [
+        transforms.ToPILImage(),
+        # transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
+        transforms.ToTensor(),
+        transforms.Lambda(lambda x: x.repeat(N_CHANNELS, 1, 1)),
+        transforms.Normalize(  # Normalize with mean and std
+            mean=[0.5 for _ in range(N_CHANNELS)],
+            std=[0.5 for _ in range(N_CHANNELS)],
+        ),
+    ]
+)
 
 
-def t_untransform(t):
-    return t * Guide3D.t_max
+def c_transform(c, c_min, c_max):
+    c_max = IMAGE_SIZE
+    return (c - c_min) / (c_max - c_min)
 
 
-def img_untransform(img):
+def t_transform(t, t_min=None, t_max=None):
+    return t / 1500
+
+
+def c_untransform(c, c_min, c_max):
+    c_max = IMAGE_SIZE
+    return c * (c_max + c_min) + c_min
+
+
+def t_untransform(t, t_min=None, t_max=None):
+    return t * 1500
+
+
+def unnorm(img):
     img = img * 0.5 + 0.5
     return img
 
@@ -99,13 +126,14 @@ class ImageCallbackLogger(Callback):
             return img, c_pred, c_true, c_gen, t_pred, t_true, t_gen
 
         img, c_pred, c_true, c_gen, t_pred, t_true, t_gen = unpack_instance(instance)
-        img = img_untransform(img)
-        c_pred = c_untransform(c_pred).T
-        c_true = c_untransform(c_true).T
-        c_gen = c_untransform(c_gen).T
-        t_pred = t_untransform(t_pred).flatten()
-        t_true = t_untransform(t_true).flatten()
-        t_gen = t_untransform(t_gen)
+
+        img = unnorm(img)
+        c_pred = c_untransform(c_pred, self.dataset.c_min, self.dataset.c_max).T
+        c_true = c_untransform(c_true, self.dataset.c_min, self.dataset.c_max).T
+        c_gen = c_untransform(c_gen, self.dataset.c_min, self.dataset.c_max).T
+        t_pred = t_untransform(t_pred, None, None).flatten()
+        t_true = t_untransform(t_true, None, None).flatten()
+        t_gen = t_untransform(t_gen, None, None)
 
         if img.shape[0] == 1:
             img = img[0]
@@ -125,18 +153,30 @@ class ImageCallbackLogger(Callback):
         img_pred = self.make_points(img.copy(), c_pred, t_pred, (255, 255, 255))
         img_gen = self.make_points(img.copy(), c_gen, t_gen, (255, 255, 255))
 
+        # plot_images(img_true, img_pred, img_gen)
+        # exit()
+
         return [img_true, img_pred, img_gen]
 
     def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         if self.epoch % self.interval == 0:
             instances = pl_module.training_step_output
             table = wandb.Table(columns=["GT", "Preds", "Inference"])
+            self.dataset = None
+            for loader in [trainer.train_dataloader, trainer.val_dataloaders, trainer.test_dataloaders]:
+                if isinstance(loader, list):
+                    loader = loader[0]
+                if loader.dataset is None:
+                    continue
+                self.dataset = loader.dataset
+                break
 
             for i, instance in tqdm(enumerate(instances)):
                 generated = pl_module.inference_step(instance["img"])
                 instances[i]["c_gen"] = generated["c"]
                 instances[i]["t_gen"] = generated["t"]
 
+            # Pass through to make images for logging. Do this row-wise.
             for instance in tqdm(instances):
                 img_true, img_pred, img_gen = self.make_images(instance)
 
@@ -150,56 +190,100 @@ class ImageCallbackLogger(Callback):
 
 
 def train():
-    wandb_logger = pl.loggers.WandbLogger(project=PROJECT, log_model=True)
-
-    dm = Guide3DModule(
-        dataset_path=Path.home() / "data/segment-real/",
+    wandb_logger = pl.loggers.WandbLogger(
+        project="transformer-3",
+        log_model=True,
+    )
+    root = Path.home() / "data/segment-real/"
+    train_ds = Guide3D(
+        root=root,
         annotations_file="sphere_wo_reconstruct.json",
-        batch_size=32,
-        n_channels=N_CHANNELS,
-        image_size=IMAGE_SIZE,
+        image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
+        c_untransform=c_untransform,
+        t_untransform=t_untransform,
+        split="train",
     )
-    model = Model(
-        max_seq_len=Guide3D.max_seq_len,
-        img_size=IMAGE_SIZE,
-        n_channels=N_CHANNELS,
-        d_model=256,
-        num_decoder_layers=8,
-        nhead=8,
+    val_ds = Guide3D(
+        root=root,
+        annotations_file="sphere_wo_reconstruct.json",
+        image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
+        c_untransform=c_untransform,
+        t_untransform=t_untransform,
+        split="val",
     )
-
+    train_dl = data.DataLoader(train_ds, batch_size=32, shuffle=True, num_workers=os.cpu_count() // 2)
+    val_dl = data.DataLoader(val_ds, batch_size=32, shuffle=True, num_workers=os.cpu_count() // 2)
+    model = Model(max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
     trainer = pl.Trainer(
-        max_epochs=200,
+        max_epochs=700,
         logger=wandb_logger,
         callbacks=[
             ImageCallbackLogger(),
-            ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="val/loss", mode="min"),
-            # EarlyStopping(monitor="val/loss", min_delta=1e-6, patience=5, mode="min", verbose=True),
+            ModelCheckpoint(f"models/{MODEL_VERSION}", monitor="val/loss", mode="min"),
         ],
     )
-    trainer.fit(model, datamodule=dm)
+    trainer.fit(model, train_dl, val_dl)
 
 
-def dummy_run_2():
-    dm = Guide3DModule(
-        dataset_path=Path.home() / "data/segment-real/",
+def test():
+    root = Path.home() / "data/segment-real/"
+    test_ds = Guide3D(
+        root=root,
         annotations_file="sphere_wo_reconstruct.json",
-        batch_size=8,
-        n_channels=N_CHANNELS,
-        image_size=IMAGE_SIZE,
+        image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
+        add_init_token=True,
+        split="train",
     )
-    model = Model(max_seq_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
+
+    model = Model(max_seq_len=test_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
+    trainer = pl.Trainer()
+    trainer.test(model, test_ds, ckpt_path="lightning_logs/version_0/checkpoints/epoch=74-step=61425.ckpt")
+
+
+def dummy_run():
+    MAX_LEN = 20
+    model = Model(max_seq_len=MAX_LEN, img_size=IMAGE_SIZE)
+    dataloader = data.DataLoader(utils.DummyData(64, (3, 224, 224), MAX_LEN), batch_size=8, shuffle=True)
 
     trainer = pl.Trainer(
         max_epochs=200,
         fast_dev_run=True,
         callbacks=[ImageCallbackLogger()],
     )
+    trainer.fit(model, dataloader)
 
-    trainer.fit(model, datamodule=dm)
+
+def dummy_run_2():
+    root = Path.home() / "data/segment-real/"
+    train_ds = Guide3D(
+        root=root,
+        annotations_file="sphere_wo_reconstruct.json",
+        image_transform=vit_transform,
+        c_transform=c_transform,
+        t_transform=t_transform,
+        c_untransform=c_untransform,
+        t_untransform=t_untransform,
+        add_init_token=True,
+        split="train",
+    )
+    model = Model(max_seq_len=train_ds.max_length, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
+    dataloader = data.DataLoader(train_ds, batch_size=8, shuffle=True)
+
+    trainer = pl.Trainer(
+        max_epochs=200,
+        fast_dev_run=True,
+        callbacks=[ImageCallbackLogger()],
+    )
+    trainer.fit(model, dataloader)
 
 
 if __name__ == "__main__":
-    # dummy_run_2()
-    train()
+    dummy_run_2()
+    # train()
     # test()

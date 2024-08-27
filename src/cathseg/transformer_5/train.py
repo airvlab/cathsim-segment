@@ -6,7 +6,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from cathseg.dataset import Guide3D, Guide3DModule
-from cathseg.transformer_2.network import ImageToSequenceTransformer as Model
+from cathseg.transformer_4.network import ImageToSequenceTransformer as Model
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint
 from scipy.interpolate import splev
@@ -23,8 +23,8 @@ wandb.require("core")
 
 IMAGE_SIZE = 1024
 N_CHANNELS = 1
-MODEL_VERSION = "1"
-PROJECT = "transformer-predict"
+MODEL_VERSION = "decoupled_heads_0"
+PROJECT = "transformer"
 
 
 def c_untransform(c):
