@@ -6,7 +6,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 from cathseg.dataset import Guide3D, Guide3DModule
-from cathseg.transformer_4.network import ImageToSequenceTransformer as Model
+from cathseg.transformer_5.network import ImageToSequenceTransformer as Model
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint
 from scipy.interpolate import splev

@@ -205,7 +205,7 @@ class MyTransformerDecoderLayer(nn.TransformerDecoderLayer):
 class MyTransformerDecoder(nn.TransformerDecoder):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.return_attention_weights = False
+        self.return_attention_weights = True
 
     def forward(
         self,
@@ -247,6 +247,7 @@ class MyTransformerDecoder(nn.TransformerDecoder):
             see the docs in :class:`~torch.nn.Transformer`.
         """
         output = tgt
+        att_score = None
 
         seq_len = _get_seq_len(tgt, self.layers[0].self_attn.batch_first)
         tgt_is_causal = _detect_is_causal_mask(tgt_mask, tgt_is_causal, seq_len)
@@ -262,14 +263,12 @@ class MyTransformerDecoder(nn.TransformerDecoder):
                 tgt_is_causal=tgt_is_causal,
                 memory_is_causal=memory_is_causal,
             )
-            exit()
-
-        self.last_att_score = att_score
 
         if self.norm is not None:
             output = self.norm(output)
 
-        return output
+        # We also return the attention scores from the last attention layer.
+        return output, att_score
 
 
 class PositionalEncoding(nn.Module):
@@ -366,7 +365,8 @@ class ImageToSequenceTransformer(pl.LightningModule):
             dim_feedforward=dim_feedforward,
             dropout=dropout,
         )
-        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
+        self.transformer_decoder = MyTransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
+        #self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
 
         # Output layers for coefficients `c` and knots `t` and end-of-sequence token `eos`
         self.fc_t = nn.Sequential(nn.Linear(d_model, 1))  # Predicting n_dim control and 1D knots
@@ -402,8 +402,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
         tgt_key_padding_mask = target_mask.to(dtype=torch.float)
 
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(target_seq.size(1)).to(device=target_seq.device)
-
-        decoder_output = self.transformer_decoder(
+        decoder_output, _ = self.transformer_decoder(
             tgt=target_seq,
             memory=features,
             tgt_mask=tgt_mask,
@@ -499,8 +498,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
             for i in range(self.max_seq_len):
                 target_seq = self.pos_encoder(self.target_embedding(generated_seq))  # (1, seq_len, d_model)
 
-                decoder_output = self.transformer_decoder(tgt=target_seq, memory=features)  # (1, seq_len, d_model)
-
+                decoder_output, att_score = self.transformer_decoder(tgt=target_seq, memory=features)  # (1, seq_len, d_model)
                 # Generate predictions
                 t_pred = self.fc_t(decoder_output)
                 c_pred = self.fc_c(decoder_output)
