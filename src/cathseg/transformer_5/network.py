@@ -195,7 +195,7 @@ class MyTransformerDecoderLayer(nn.Module):
                            attn_mask=attn_mask,
                            key_padding_mask=key_padding_mask,
                            is_causal=is_causal,
-                           need_weights=False)[0]
+                           need_weights=True)[0]
         return self.dropout1(x)
 
     # multihead attention block
@@ -205,7 +205,8 @@ class MyTransformerDecoderLayer(nn.Module):
                                 attn_mask=attn_mask,
                                 key_padding_mask=key_padding_mask,
                                 is_causal=is_causal,
-                                need_weights=True)
+                                need_weights=True,
+                                average_attn_weights=False)
         return self.dropout2(x), mha_scores
 
     # feed forward block
@@ -293,11 +294,15 @@ class MyTransformerDecoder(nn.Module):
                          memory_key_padding_mask=memory_key_padding_mask,
                          tgt_is_causal=tgt_is_causal,
                          memory_is_causal=memory_is_causal)
+            
+        #print(mha_scores.shape)
 
         if self.norm is not None:
             output = self.norm(output)
 
-        return output, mha_scores
+        print(mha_scores.T)
+
+        return [output, mha_scores.T]
 
 
 class PositionalEncoding(nn.Module):
@@ -431,12 +436,19 @@ class ImageToSequenceTransformer(pl.LightningModule):
         tgt_key_padding_mask = target_mask.to(dtype=torch.float)
     
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(target_seq.size(1)).to(device=target_seq.device)
-        decoder_output, _ = self.transformer_decoder(
+        decoder_output, mha_scores = self.transformer_decoder(
             tgt=target_seq,
             memory=features,
             tgt_mask=tgt_mask,
             tgt_key_padding_mask=tgt_key_padding_mask,
         )
+
+        mha_scores = mha_scores.T
+        print(mha_scores.shape)
+
+        plt.imsave("forward.png", mha_scores.cpu().detach().numpy())
+
+        #print(decoder_output.shape)
 
         t_pred = self.fc_t(decoder_output)  #  ( batch_size, seq_len, 1)
         c_pred = self.fc_c(decoder_output)  #  ( batch_size, seq_len, 2)
@@ -515,10 +527,11 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
     def inference_step(self, X):
         self.eval()
-
+        print("running inference")
         with torch.no_grad():
             # Add batch dimension to the input tensor
             X = X.unsqueeze(0)  # (1, input_dim)
+
             features = self.encoder(X).unsqueeze(0)  # (1, d_model)
 
             # Initialize the generated sequence with start token (all zeros)
@@ -526,9 +539,10 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
             for i in range(self.max_seq_len):
                 target_seq = self.pos_encoder(self.target_embedding(generated_seq))  # (1, seq_len, d_model)
-
                 decoder_output, att_score = self.transformer_decoder(tgt=target_seq, memory=features)  # (1, seq_len, d_model)
-                
+                # print(decoder_output.shape)
+                print(att_score.shape)
+
                 # Generate predictions
                 t_pred = self.fc_t(decoder_output)
                 c_pred = self.fc_c(decoder_output)
@@ -546,8 +560,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
                 # Early stopping condition based on eos prediction
                 if eos_pred.item() > 0.5 and i > 2:
                     break
-                print(att_score) 
-                exit()
+
             # Remove the initial start token and prepare the output
             generated_seq = generated_seq[:, 1:, :].squeeze(0)  # (seq_len, 3)
             t_pred = generated_seq[:, 0]  # (seq_len)
@@ -646,7 +659,8 @@ def main():
 
     # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
     dataset = Guide3D(
-        dataset_path=Path.home() / "data/segment-real/",
+        dataset_path="/tmp/guide3d/guide3d",
+        download=True,
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
@@ -666,7 +680,7 @@ def main():
             # plot_instance(tuple(x[0] for x in batch), dataset)
 
             model.inference_step(img[0])
-            # exit()
+            exit()
 
             loss = model.training_step(batch, i)
 
