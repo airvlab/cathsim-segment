@@ -1,5 +1,6 @@
 import math
-from typing import Optional
+import copy
+from typing import Optional, Union, Callable
 
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
@@ -11,6 +12,9 @@ from guide3d.dataset.image.spline import Guide3D
 from torch import Tensor
 from torchvision.models import ViT_B_16_Weights, vit_b_16
 from torchvision.transforms import transforms
+
+import torch.nn.functional as F
+
 
 MAX_LEN = 20
 N_CHANNELS = 1
@@ -125,61 +129,38 @@ def unnorm(img):
     img = img * 0.5 + 0.5
     return img
 
+class MyTransformerDecoderLayer(nn.Module):
+    __constants__ = ['norm_first']
 
-class MyTransformerDecoderLayer(nn.TransformerDecoderLayer):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.return_attention_weights = True
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int = 2048, dropout: float = 0.1,
+                 activation: Union[str, Callable[[Tensor], Tensor]] = F.relu,
+                 layer_norm_eps: float = 1e-5, batch_first: bool = False, norm_first: bool = False,
+                 bias: bool = True, device=None, dtype=None) -> None:
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first,
+                                            bias=bias, **factory_kwargs)
+        self.multihead_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout, batch_first=batch_first,
+                                                 bias=bias, **factory_kwargs)
+        # Implementation of Feedforward model
+        self.linear1 = nn.Linear(d_model, dim_feedforward, bias=bias, **factory_kwargs)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model, bias=bias, **factory_kwargs)
 
-    # self-attention block
-    def _sa_block(
-        self,
-        x: Tensor,
-        attn_mask: Optional[Tensor],
-        key_padding_mask: Optional[Tensor],
-        is_causal: bool = False,
-    ) -> Tensor:
-        x = self.self_attn(
-            x,
-            x,
-            x,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,
-            is_causal=is_causal,
-            need_weights=True,
-        )
-        if not self.return_attention_weights:
-            x = x[0]
-            return self.dropout1(x)
-        return self.dropout1(x[0]), x[1]
+        self.norm_first = norm_first
+        self.norm1 = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)
+        self.norm2 = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)
+        self.norm3 = nn.LayerNorm(d_model, eps=layer_norm_eps, bias=bias, **factory_kwargs)
+        self.dropout1 = nn.Dropout(dropout)
+        self.dropout2 = nn.Dropout(dropout)
+        self.dropout3 = nn.Dropout(dropout)
 
-    # multihead attention block
-    def _mha_block(
-        self,
-        x: Tensor,
-        mem: Tensor,
-        attn_mask: Optional[Tensor],
-        key_padding_mask: Optional[Tensor],
-        is_causal: bool = True,
-    ) -> Tensor:
-        x = self.multihead_attn(
-            x,
-            mem,
-            mem,
-            attn_mask=attn_mask,
-            key_padding_mask=key_padding_mask,
-            is_causal=is_causal,
-            need_weights=True,
-        )
-        if not self.return_attention_weights:
-            x = x[0]
-            return self.dropout2(x)
-        return self.dropout2(x[0]), x[1]
+        self.activation = activation
 
-    # feed forward block
-    def _ff_block(self, x: Tensor) -> Tensor:
-        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
-        return self.dropout3(x)
+    def __setstate__(self, state):
+        if 'activation' not in state:
+            state['activation'] = F.relu
+        super().__setstate__(state)
 
     def forward(
         self,
@@ -192,32 +173,86 @@ class MyTransformerDecoderLayer(nn.TransformerDecoderLayer):
         tgt_is_causal: bool = False,
         memory_is_causal: bool = False,
     ) -> Tensor:
+ 
         x = tgt
-        att_out, att_scores = self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal)
-        x = self.norm1(x + att_out)
-        att_out, att_scores = self._mha_block(x, memory, memory_mask, memory_key_padding_mask, memory_is_causal)
-        x = self.norm2(x + att_out)
-        x = self.norm3(x + self._ff_block(x))
+        if self.norm_first:
+            x = x + self._sa_block(self.norm1(x), tgt_mask, tgt_key_padding_mask, tgt_is_causal)
+            mha_x, mha_scores = self._mha_block(self.norm2(x), memory, memory_mask, memory_key_padding_mask, memory_is_causal)
+            x = x + mha_x
+            x = x + self._ff_block(self.norm3(x))
+        else:
+            x = self.norm1(x + self._sa_block(x, tgt_mask, tgt_key_padding_mask, tgt_is_causal))
+            mha_x, mha_scores = self._mha_block(x, memory, memory_mask, memory_key_padding_mask, memory_is_causal)
+            x = self.norm2(x + mha_x)
+            x = self.norm3(x + self._ff_block(x))
 
-        return x, att_scores
+        return x, mha_scores
+
+    # self-attention block
+    def _sa_block(self, x: Tensor,
+                  attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor], is_causal: bool = False) -> Tensor:
+        x = self.self_attn(x, x, x,
+                           attn_mask=attn_mask,
+                           key_padding_mask=key_padding_mask,
+                           is_causal=is_causal,
+                           need_weights=False)[0]
+        return self.dropout1(x)
+
+    # multihead attention block
+    def _mha_block(self, x: Tensor, mem: Tensor,
+                   attn_mask: Optional[Tensor], key_padding_mask: Optional[Tensor], is_causal: bool = False) -> Tensor:
+        x, mha_scores = self.multihead_attn(x, mem, mem,
+                                attn_mask=attn_mask,
+                                key_padding_mask=key_padding_mask,
+                                is_causal=is_causal,
+                                need_weights=True)
+        return self.dropout2(x), mha_scores
+
+    # feed forward block
+    def _ff_block(self, x: Tensor) -> Tensor:
+        x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+        return self.dropout3(x)
 
 
-class MyTransformerDecoder(nn.TransformerDecoder):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.return_attention_weights = True
+def _get_clones(module, N):
+    # FIXME: copy.deepcopy() is not defined on nn.module
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
-    def forward(
+
+class MyTransformerDecoder(nn.Module):
+    r"""TransformerDecoder is a stack of N decoder layers.
+
+    Args:
+        decoder_layer: an instance of the TransformerDecoderLayer() class (required).
+        num_layers: the number of sub-decoder-layers in the decoder (required).
+        norm: the layer normalization component (optional).
+
+    Examples::
+        >>> decoder_layer = nn.TransformerDecoderLayer(d_model=512, nhead=8)
+        >>> transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
+        >>> memory = torch.rand(10, 32, 512)
+        >>> tgt = torch.rand(20, 32, 512)
+        >>> out = transformer_decoder(tgt, memory)
+    """
+
+    __constants__ = ['norm']
+
+    def __init__(
         self,
-        tgt: Tensor,
-        memory: Tensor,
-        tgt_mask: Optional[Tensor] = None,
-        memory_mask: Optional[Tensor] = None,
-        tgt_key_padding_mask: Optional[Tensor] = None,
-        memory_key_padding_mask: Optional[Tensor] = None,
-        tgt_is_causal: Optional[bool] = None,
-        memory_is_causal: bool = False,
-    ) -> Tensor:
+        decoder_layer: "TransformerDecoderLayer",
+        num_layers: int,
+        norm: Optional[nn.Module] = None
+    ) -> None:
+        super().__init__()
+        torch._C._log_api_usage_once(f"torch.nn.modules.{self.__class__.__name__}")
+        self.layers = _get_clones(decoder_layer, num_layers)
+        self.num_layers = num_layers
+        self.norm = norm
+
+    def forward(self, tgt: Tensor, memory: Tensor, tgt_mask: Optional[Tensor] = None,
+                memory_mask: Optional[Tensor] = None, tgt_key_padding_mask: Optional[Tensor] = None,
+                memory_key_padding_mask: Optional[Tensor] = None, tgt_is_causal: Optional[bool] = None,
+                memory_is_causal: bool = False) -> Tensor:
         r"""Pass the inputs (and mask) through the decoder layer in turn.
 
         Args:
@@ -247,28 +282,22 @@ class MyTransformerDecoder(nn.TransformerDecoder):
             see the docs in :class:`~torch.nn.Transformer`.
         """
         output = tgt
-        att_score = None
 
         seq_len = _get_seq_len(tgt, self.layers[0].self_attn.batch_first)
         tgt_is_causal = _detect_is_causal_mask(tgt_mask, tgt_is_causal, seq_len)
 
         for mod in self.layers:
-            output, att_score = mod(
-                output,
-                memory,
-                tgt_mask=tgt_mask,
-                memory_mask=memory_mask,
-                tgt_key_padding_mask=tgt_key_padding_mask,
-                memory_key_padding_mask=memory_key_padding_mask,
-                tgt_is_causal=tgt_is_causal,
-                memory_is_causal=memory_is_causal,
-            )
+            output, mha_scores = mod(output, memory, tgt_mask=tgt_mask,
+                         memory_mask=memory_mask,
+                         tgt_key_padding_mask=tgt_key_padding_mask,
+                         memory_key_padding_mask=memory_key_padding_mask,
+                         tgt_is_causal=tgt_is_causal,
+                         memory_is_causal=memory_is_causal)
 
         if self.norm is not None:
             output = self.norm(output)
 
-        # We also return the attention scores from the last attention layer.
-        return output, att_score
+        return output, mha_scores
 
 
 class PositionalEncoding(nn.Module):
@@ -400,7 +429,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
         target_seq = self.pos_encoder(target_seq)  # (batch_size, seq_len, d_model)
 
         tgt_key_padding_mask = target_mask.to(dtype=torch.float)
-
+    
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(target_seq.size(1)).to(device=target_seq.device)
         decoder_output, _ = self.transformer_decoder(
             tgt=target_seq,
@@ -499,6 +528,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
                 target_seq = self.pos_encoder(self.target_embedding(generated_seq))  # (1, seq_len, d_model)
 
                 decoder_output, att_score = self.transformer_decoder(tgt=target_seq, memory=features)  # (1, seq_len, d_model)
+                
                 # Generate predictions
                 t_pred = self.fc_t(decoder_output)
                 c_pred = self.fc_c(decoder_output)
@@ -516,7 +546,8 @@ class ImageToSequenceTransformer(pl.LightningModule):
                 # Early stopping condition based on eos prediction
                 if eos_pred.item() > 0.5 and i > 2:
                     break
-
+                print(att_score) 
+                exit()
             # Remove the initial start token and prepare the output
             generated_seq = generated_seq[:, 1:, :].squeeze(0)  # (seq_len, 3)
             t_pred = generated_seq[:, 0]  # (seq_len)
