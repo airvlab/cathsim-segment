@@ -1,8 +1,5 @@
 import math
 
-import cv2
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -51,12 +48,12 @@ class PatchEmbeddings(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, hidden_size, mlp_intermed_size, dropout_prob):
+    def __init__(self, emb_size: int, hidden_size: int, dropout_prob: float):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_intermed_size),
+            nn.Linear(emb_size, hidden_size),
             nn.GELU(),
-            nn.Linear(mlp_intermed_size, hidden_size),
+            nn.Linear(hidden_size, emb_size),
             nn.Dropout(dropout_prob),
         )
 
@@ -170,7 +167,7 @@ class Encoder(nn.Module):
         return out, attention_probs
 
 
-def visualize_attention(img, model):
+def visualize_attention(img, model, layer=None):
     out, attention_probs = model(img, output_attentions=True)
     attention_maps = torch.stack(attention_probs, dim=0)  # Shape: [num_layers, batch_size, num_heads, seq_len, seq_len]
     attention_maps = attention_maps.transpose(0, 1)  # Shape: [batch_size, num_layers, num_heads, seq_len, seq_len]
@@ -181,9 +178,11 @@ def visualize_attention(img, model):
 
     # Example print output
     print("Concat att maps: ", attention_maps.shape)  # Should be [1, 48, 256, 256] with 8 heads and 6 layers
-
     # You might want to average across layers:
-    attention_maps = attention_maps.mean(dim=1)  # Shape: [batch_size, seq_len, seq_len]
+    if layer:
+        attention_maps = attention_maps[:, layer, :, :]
+    else:
+        attention_maps = attention_maps.mean(dim=1)  # Shape: [batch_size, seq_len, seq_len]
     print("Avg att maps: ", attention_maps.shape)
 
     # Reshape to the spatial dimensions
@@ -192,15 +191,14 @@ def visualize_attention(img, model):
     print("Size: ", size)
     # attention_maps = attention_maps.view(size, size)  # Shape: [size, size]
     attention_maps = attention_maps.squeeze(0).detach().cpu().numpy()  # Shape: [256, 256]
-    attention_maps_resized = cv2.resize(attention_maps, (256, 256))  # Resizing for visualization
+    # attention_maps_resized = cv2.resize(attention_maps, (256, 256))  # Resizing for visualization
 
     # Optional: Interpolate to match original image size
-    plt.figure(figsize=(8, 8))
-    plt.imshow(np.zeros((256, 256, 3), dtype=np.uint8))
-    plt.imshow(attention_maps_resized, cmap="jet", alpha=0.5)  # Adjust alpha for transparency
-    plt.axis("off")
-    plt.show()
-    pass
+    # plt.figure(figsize=(8, 8))
+    # plt.imshow(np.zeros((256, 256, 3), dtype=np.uint8))
+    # plt.imshow(attention_maps_resized, cmap="jet", alpha=0.5)  # Adjust alpha for transparency
+    # plt.axis("off")
+    # plt.show()
 
 
 def main():
@@ -225,8 +223,9 @@ def main():
     )
 
     X = torch.rand(1, n_channels, img_size, img_size)
-    out = encoder(X)
-    print("Final Output: ", out.shape)
+    visualize_attention(X, encoder, 5)
+    # out = encoder(X, output_attentions=True)
+    # print("Final Output: ", out.shape)
 
 
 if __name__ == "__main__":
