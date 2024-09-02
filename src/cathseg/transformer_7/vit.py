@@ -157,14 +157,14 @@ class Encoder(nn.Module):
 
     def forward(self, x, output_attentions=False):
         patch_embedding = self.patch_embedding(x)
-        print("Patch Embedding: ", patch_embedding.shape)
+        #print("Patch Embedding: ", patch_embedding.shape)
         positional_encoding = self.positional_encoding(patch_embedding)
-        print("Positional Encoding: ", positional_encoding.shape)
+        #print("Positional Encoding: ", positional_encoding.shape)
         out, attention_probs = self.transformer_encoder(positional_encoding, output_attentions=output_attentions)
-        print("Encoder: ", out.shape)
-        print("Attention Probs: ", len(attention_probs))
+        #print("Encoder: ", out.shape)
+        #print("Attention Probs: ", len(attention_probs))
 
-        return out, attention_probs
+        return out
 
 
 def visualize_attention(img, model, layer=None):

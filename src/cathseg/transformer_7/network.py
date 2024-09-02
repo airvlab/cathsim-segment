@@ -12,12 +12,12 @@ from torchvision.transforms import transforms
 
 MAX_LEN = 20
 N_CHANNELS = 1
-IMAGE_SIZE = 1024
+IMAGE_SIZE = 224
 
 vit_transform = transforms.Compose(
     [
         transforms.ToPILImage(),  # Convert image to PIL image
-        # transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
         transforms.ToTensor(),
         transforms.Lambda(lambda x: x.repeat(N_CHANNELS, 1, 1)),
         transforms.Normalize(  # Normalize with mean and std
@@ -180,8 +180,8 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
     def forward(self, img, target_seq, target_mask):
         features = self.encoder(img)  #  (batch_size, d_model)
-
-        features = features.unsqueeze(1)  # (batch_size, 1, d_model)
+        print("features shape", features.shape)
+        #features = features.unsqueeze(1)  # (batch_size, 1, d_model)
 
         target_seq = self.target_embedding(target_seq)  # (batch_size, seq_len, d_model)
         target_seq = self.pos_encoder(target_seq)  # (batch_size, seq_len, d_model)
