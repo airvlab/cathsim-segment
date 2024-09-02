@@ -28,21 +28,21 @@ vit_transform = transforms.Compose(
 )
 
 
-def c_transform(c, c_min, c_max):
+def c_transform(c, c_min = 0, c_max = 1):
     c_max = IMAGE_SIZE
     return (c - c_min) / (c_max - c_min)
 
 
-def t_transform(t, t_min, t_max):
+def t_transform(t):
     return t / 1500
 
 
-def c_untransform(c, c_min, c_max):
+def c_untransform(c, c_min = 0, c_max = 1):
     c_max = IMAGE_SIZE
     return c * (c_max + c_min) + c_min
 
 
-def t_untransform(t, t_min, t_max):
+def t_untransform(t):
     return t * 1500
 
 
@@ -144,6 +144,7 @@ class ImageToSequenceTransformer(pl.LightningModule):
             qkv_bias=True,
             hidden_dropout_prob=0.1,
             mlp_dropout_prob=0.1,
+            attention_dropout_probs=0.1
         )
 
         self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout)
@@ -355,7 +356,8 @@ def main():
 
     # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
     dataset = Guide3D(
-        root=Path.home() / "data/segment-real/",
+        dataset_path="/tmp/guide3d/guide3d/",
+        download = True,
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
