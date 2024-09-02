@@ -251,12 +251,11 @@ class Encoder(nn.Module):
     ):
         super().__init__()
 
-        self.patch_embedding = PatchEmbeddings(image_size, n_channels, patch_size, embed_dim)
         self.n_patches = (image_size // patch_size) ** 2
         print(self.n_patches)
 
-        self.positional_embedding = nn.Parameter(torch.rand(1, self.n_patches + 1, embed_dim))
-        self.cls_token = nn.Parameter(torch.rand(1, 1, embed_dim))
+        self.patch_embedding = PatchEmbeddings(image_size, n_channels, patch_size, embed_dim)
+        self.positional_encoding = PositionalEncoding(embed_dim, max_len=self.patch_embedding.num_patches)
 
         self.transformer_encoder = TransformerEncoder(
             num_layers,
@@ -273,8 +272,7 @@ class Encoder(nn.Module):
     def forward(self, x):
         patch_embedding = self.patch_embedding(x)
         print("Patch Embedding: ", patch_embedding.shape)
-        exit()
-        positional_encoding = self.positional_embedding(patch_embedding)
+        positional_encoding = self.positional_encoding(patch_embedding)
         print("Positional Encoding: ", positional_encoding.shape)
         out, attention_probs = self.transformer_encoder(positional_encoding, output_attentions=True)
         print("Encoder: ", out.shape)
