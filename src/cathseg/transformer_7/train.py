@@ -127,8 +127,11 @@ class ImageCallbackLogger(Callback):
 
         return [img_true, img_pred, img_gen]
 
-    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
         instances = pl_module.training_step_output
+        samples = min(len(instances), 10)
+        instances = instances[:samples]
+
         table = wandb.Table(columns=["GT", "Preds", "Inference"])
 
         for i, instance in enumerate(instances):

@@ -131,16 +131,17 @@ class SplineFormer(pl.LightningModule):
         seq_lens = tgt_pad_mask.sum(dim=1)
 
         if val:
-            self.training_step_output.apppend(
-                dict(
-                    img=imgs[0],
-                    t_true=tgt_output[0, :, 0:1],
-                    c_true=tgt_output[0, :, 1:3],
-                    t_pred=pred_seq[0, :, 0:1],
-                    c_pred=pred_seq[0, :, 1:3],
-                    seq_len=seq_lens[0],
+            if len(self.training_step_output) < 10:
+                self.training_step_output.append(
+                    dict(
+                        img=imgs[0],
+                        t_true=tgt_output[0, :, 0:1],
+                        c_true=tgt_output[0, :, 1:3],
+                        t_pred=pred_seq[0, :, 0:1],
+                        c_pred=pred_seq[0, :, 1:3],
+                        seq_len=seq_lens[0],
+                    )
                 )
-            )
 
         return loss_seq.sum(), loss_eos.sum(), loss
 
@@ -154,8 +155,8 @@ class SplineFormer(pl.LightningModule):
         self._log(loss_seq, loss_eos, loss, "train")
         return loss
 
-    def validation_step(self, batch, batch_idx, val=True):
-        loss_seq, loss_eos, loss = self._step(batch, batch_idx)
+    def validation_step(self, batch, batch_idx):
+        loss_seq, loss_eos, loss = self._step(batch, batch_idx, val=True)
         self._log(loss_seq, loss_eos, loss, "val")
         return loss
 
