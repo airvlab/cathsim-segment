@@ -82,6 +82,8 @@ class SplineTransformer(nn.Module):
 
 
 def main():
+    from cathseg.transformer_7.utils import visualize_decoder_attention, visualize_encoder_attention
+
     num_channels = 1
     patch_size = 32
     image_size = 1024
@@ -115,6 +117,9 @@ def main():
     print("Memory: ", memory.shape)
     print("Encoder attentions: ", encoder_atts.shape)
     print("Decoder attentions: ", decoder_atts.shape)
+
+    visualize_encoder_attention(X, encoder_atts, layer=0)
+    visualize_decoder_attention(X, decoder_atts, layer=0, patch_size=patch_size)
 
 
 if __name__ == "__main__":

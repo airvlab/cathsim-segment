@@ -53,13 +53,9 @@ class PatchEmbeddings(nn.Module):
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
         )
-        # self.projection = nn.Conv2d(
-        #     self.num_channels, self.embed_dim, kernel_size=self.patch_size, stride=self.patch_size
-        # )
 
     def forward(self, x: torch.Tensor):
-        x = self.to_patch_embedding(x)  # (batch_size, emb_size, n_patches, n_patches)
-        # x = x.flatten(2).transpose(1, 2)  # (batch_size, n_patches^2, emb_size)
+        x = self.to_patch_embedding(x)
         return x
 
 

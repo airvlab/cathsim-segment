@@ -23,7 +23,7 @@ wandb.require("core")
 
 IMAGE_SIZE = 1024
 N_CHANNELS = 1
-MODEL_VERSION = "trying-stuff-w-decoder-rewritten"
+MODEL_VERSION = "w_attention_viz"
 PROJECT = "transformer"
 
 
@@ -56,7 +56,6 @@ def plot_images(img_true, img_pred, img_gen):
 
     plt.show()
     plt.close()
-    # exit()
 
 
 class ImageCallbackLogger(Callback):
