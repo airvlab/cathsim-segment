@@ -73,13 +73,7 @@ class FeedForward(nn.Module):
 
 
 class TransformerEncoderLayer(nn.Module):
-    def __init__(
-        self,
-        d_model: int = 256,
-        num_heads: int = 8,
-        ff_dim: int = 256 * 4,
-        dropout: float = 0.00,
-    ):
+    def __init__(self, d_model: int = 256, num_heads: int = 8, ff_dim: int = 256 * 4, dropout: float = 0.00):
         super().__init__()
 
         self.mha = nn.MultiheadAttention(
@@ -103,11 +97,7 @@ class TransformerEncoderLayer(nn.Module):
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(
-        self,
-        layer=TransformerEncoderLayer,
-        num_layers: int = 6,
-    ):
+    def __init__(self, layer=TransformerEncoderLayer, num_layers: int = 6):
         super().__init__()
         self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
 
@@ -124,21 +114,14 @@ class TransformerDecoderLayer(nn.Module):
     def __init__(self, d_model: int, num_heads: int, ff_dim: int, dropout: float):
         super().__init__()
         self.sa = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-        self.mha = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
-
         self.sa_norm = nn.LayerNorm(d_model)
-        self.mha_norm = nn.LayerNorm(d_model)
-
         self.sa_dropout = nn.Dropout(dropout)
+
+        self.mha = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+        self.mha_norm = nn.LayerNorm(d_model)
         self.mha_dropout = nn.Dropout(dropout)
 
-        self.ff = nn.Sequential(
-            nn.Linear(d_model, ff_dim),
-            nn.ReLU(inplace=True),
-            nn.Dropout(p=dropout),
-            nn.Linear(ff_dim, d_model),
-        )
-
+        self.ff = FeedForward(d_model, ff_dim)
         self.ff_norm = nn.LayerNorm(d_model)
         self.ff_dropout = nn.Dropout(dropout)
 
@@ -158,12 +141,7 @@ class TransformerDecoderLayer(nn.Module):
 
 
 class TransformerDecoder(nn.Module):
-    def __init__(
-        self,
-        layer: TransformerDecoderLayer,
-        num_layers: int,
-        dropout: float,
-    ):
+    def __init__(self, layer: TransformerDecoderLayer, num_layers: int, dropout: float):
         super().__init__()
         self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
         self.dropout = nn.Dropout(p=dropout)
