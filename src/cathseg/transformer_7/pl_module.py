@@ -9,12 +9,12 @@ from torchvision.transforms import transforms
 
 MAX_LEN = 20
 N_CHANNELS = 1
-IMAGE_SIZE = 1024
+IMAGE_SIZE = 224
 
 vit_transform = transforms.Compose(
     [
         transforms.ToPILImage(),  # Convert image to PIL image
-        # transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
+        transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
         transforms.ToTensor(),
         transforms.Lambda(lambda x: x.repeat(N_CHANNELS, 1, 1)),
         transforms.Normalize(  # Normalize with mean and std
