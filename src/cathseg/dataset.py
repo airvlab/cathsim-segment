@@ -100,7 +100,7 @@ class Guide3DModule(pl.LightningDataModule):
         return data.DataLoader(
             self.val_ds,
             batch_size=self.batch_size,
-            shuffle=True,
+            shuffle=False,
             num_workers=os.cpu_count() // 2,
         )
 

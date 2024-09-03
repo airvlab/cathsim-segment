@@ -51,30 +51,33 @@ def unnorm(img):
 class SplineFormer(pl.LightningModule):
     def __init__(
         self,
-        max_seq_len: int,
-        n_channels: int = 1,
+        tgt_max_len: int,
+        num_channels: int = 1,
         img_size: tuple = 1024,
         d_model: int = 512,
-        nhead: int = 8,
-        dim_feedforward: int = 512,
+        patch_size: int = 32,
+        num_heads: int = 8,
+        num_layers_encoder: int = 6,
+        num_layers_decoder: int = 6,
         dropout: float = 0.1,
         n_dim: int = 2,
-        **model_kwargs,
     ):
         super(SplineFormer, self).__init__()
         self.save_hyperparameters()
 
         self.n_dim = n_dim
+        self.tgt_max_len = tgt_max_len
 
         self.model = Model(
             image_size=img_size,
-            num_channels=n_channels,
-            patch_size=32,
-            embed_dim=d_model,
-            num_layers_encoder=6,
-            num_layers_decoder=6,
-            num_heads=nhead,
-            tgt_max_len=max_seq_len,
+            num_channels=num_channels,
+            patch_size=patch_size,
+            d_model=d_model,
+            num_layers_encoder=num_layers_encoder,
+            num_layers_decoder=num_layers_decoder,
+            dropout=dropout,
+            num_heads=num_heads,
+            tgt_max_len=tgt_max_len,
         )
 
         # Loss functions
@@ -84,63 +87,60 @@ class SplineFormer(pl.LightningModule):
         self.lambda_seq = 1.0
         self.lambda_eos = 1.0
 
-        self.max_seq_len = max_seq_len
-
         self.init_token = torch.zeros(1, 1 + self.n_dim)  # (seq_len, dim)
 
-        self.training_step_output = None
+        self.training_step_output = []
 
-    def forward(self, img, target_seq, tgt_key_padding_mask):
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(img.size(1)).to(device=img.device)
-        seq_pred, eos_pred, memory, attentions = self.model(
-            src=img, tgt=target_seq, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask
+    def forward(self, img, tgt, tgt_mask, tgt_pad_mask):
+        seq_pred, eos_pred, memory, encoder_atts, decoder_atts = self.model(
+            src=img, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask
         )
+        return seq_pred, eos_pred.squeeze(-1), memory, encoder_atts, decoder_atts
 
-        return seq_pred, eos_pred.squeeze(-1), memory, attentions
+    def _step(self, batch, batch_idx, val=False):
+        imgs, tgt, tgt_pad_mask = batch
 
-    def _step(self, batch, batch_idx):
-        imgs, target_seq, tgt_key_padding_mask = batch
+        init_token = self.init_token.expand(tgt.size(0), -1, -1).to(device=tgt.device)
+        tgt = torch.cat([init_token, tgt], 1)
 
-        init_token = self.init_token.expand(target_seq.size(0), -1, -1).to(device=target_seq.device)
-        target_seq = torch.cat([init_token, target_seq], 1)
-
-        target_input = target_seq[:, :-1, :]
-        target_seq = target_seq[:, 1:, :]
+        tgt_input = tgt[:, :-1, :]
+        tgt_output = tgt[:, 1:, :]
 
         # Create EOS labels: 1 for the last valid token, 0 otherwise
-        eos_labels = torch.zeros_like(tgt_key_padding_mask)
-        eos_labels[torch.arange(tgt_key_padding_mask.size(0)), (tgt_key_padding_mask.sum(dim=1) - 1).long()] = 1
+        eos_labels = torch.zeros_like(tgt_pad_mask)
+        eos_labels[torch.arange(tgt_pad_mask.size(0)), (tgt_pad_mask.sum(dim=1) - 1).long()] = 1
         eos_labels = eos_labels.float()
 
-        tgt_key_padding_mask = tgt_key_padding_mask.to(dtype=torch.float)
+        tgt_pad_mask = tgt_pad_mask.to(dtype=torch.float)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(device=tgt_input.device)
+
         # Forward pass
-        pred_seq, eos_pred, memory, attentions = self(imgs, target_input, tgt_key_padding_mask)
+        pred_seq, eos_pred, memory, encoder_atts, decoder_atts = self(imgs, tgt_input, tgt_mask, tgt_pad_mask)
 
         # Compute losses
-        loss_seq = self.criterion_seq(pred_seq, target_seq)
+        loss_seq = self.criterion_seq(pred_seq, tgt_output)
         loss_eos = self.criterion_eos(eos_pred, eos_labels)  # (batch_size, seq_len)
 
         # Apply the mask to the losses
-        loss_seq = loss_seq * tgt_key_padding_mask.unsqueeze(-1)
-        loss_eos = loss_eos * tgt_key_padding_mask
+        loss_seq = loss_seq * tgt_pad_mask.unsqueeze(-1)
+        loss_eos = loss_eos * tgt_pad_mask
 
         # Compute the total loss as a weighted sum
         loss = self.lambda_seq * loss_seq.sum() + self.lambda_eos * loss_eos.sum()
 
-        seq_lens = tgt_key_padding_mask.sum(dim=1)
+        seq_lens = tgt_pad_mask.sum(dim=1)
 
-        if batch_idx == 0:
-            self.training_step_output = [
+        if val:
+            self.training_step_output.apppend(
                 dict(
-                    img=imgs[i],
-                    t_true=target_seq[i, :, 0:1],
-                    c_true=target_seq[i, :, 1:3],
-                    t_pred=pred_seq[i, :, 0:1],
-                    c_pred=pred_seq[i, :, 1:3],
-                    seq_len=seq_lens[i],
+                    img=imgs[0],
+                    t_true=tgt_output[0, :, 0:1],
+                    c_true=tgt_output[0, :, 1:3],
+                    t_pred=pred_seq[0, :, 0:1],
+                    c_pred=pred_seq[0, :, 1:3],
+                    seq_len=seq_lens[0],
                 )
-                for i in range(min(4, imgs.size(0)))
-            ]
+            )
 
         return loss_seq.sum(), loss_eos.sum(), loss
 
@@ -154,7 +154,7 @@ class SplineFormer(pl.LightningModule):
         self._log(loss_seq, loss_eos, loss, "train")
         return loss
 
-    def validation_step(self, batch, batch_idx):
+    def validation_step(self, batch, batch_idx, val=True):
         loss_seq, loss_eos, loss = self._step(batch, batch_idx)
         self._log(loss_seq, loss_eos, loss, "val")
         return loss
@@ -169,8 +169,8 @@ class SplineFormer(pl.LightningModule):
             # Initialize the generated sequence with start token (all zeros)
             generated_seq = torch.zeros(1, 1, 3).to(X.device)  # (1, 1, 3)
 
-            for i in range(self.max_seq_len):
-                seq_pred, eos_pred, memory, attentions = self.model(src=X, tgt=generated_seq)
+            for i in range(self.tgt_max_len):
+                seq_pred, eos_pred, memory, encoder_atts, decoder_atts = self.model(src=X, tgt=generated_seq)
 
                 # Take the last prediction for each component
                 last_pt_pred = seq_pred[:, -1:, :]
@@ -250,7 +250,7 @@ def main():
 
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=False)
 
-    model = SplineFormer(max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMAGE_SIZE)
+    model = SplineFormer(tgt_max_len=dataset.max_length, num_channels=N_CHANNELS, img_size=IMAGE_SIZE)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop

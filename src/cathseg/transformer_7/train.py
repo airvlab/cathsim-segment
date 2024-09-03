@@ -23,7 +23,7 @@ wandb.require("core")
 
 IMAGE_SIZE = 1024
 N_CHANNELS = 1
-MODEL_VERSION = "trying-stuff"
+MODEL_VERSION = "trying-stuff-w-decoder-rewritten"
 PROJECT = "transformer"
 
 
@@ -127,26 +127,24 @@ class ImageCallbackLogger(Callback):
 
         return [img_true, img_pred, img_gen]
 
-    def on_train_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        if self.epoch % self.interval == 0:
-            instances = pl_module.training_step_output
-            table = wandb.Table(columns=["GT", "Preds", "Inference"])
+    def on_validation_epoch_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        instances = pl_module.training_step_output
+        table = wandb.Table(columns=["GT", "Preds", "Inference"])
 
-            for i, instance in tqdm(enumerate(instances)):
-                generated = pl_module.inference_step(instance["img"])
-                instances[i]["c_gen"] = generated["c"]
-                instances[i]["t_gen"] = generated["t"]
+        for i, instance in enumerate(instances):
+            generated = pl_module.inference_step(instance["img"])
+            instances[i]["c_gen"] = generated["c"]
+            instances[i]["t_gen"] = generated["t"]
 
-            for instance in tqdm(instances):
-                img_true, img_pred, img_gen = self.make_images(instance)
+        for instance in tqdm(instances):
+            img_true, img_pred, img_gen = self.make_images(instance)
 
-                table.add_data(
-                    wandb.Image(img_true[:, :, 0]), wandb.Image(img_pred[:, :, 0]), wandb.Image(img_gen[:, :, 0])
-                )
+            table.add_data(
+                wandb.Image(img_true[:, :, 0]), wandb.Image(img_pred[:, :, 0]), wandb.Image(img_gen[:, :, 0])
+            )
 
-            trainer.logger.experiment.log({"img_samples": table})
-
-        self.epoch += 1
+        trainer.logger.experiment.log({"img_samples": table})
+        pl_module.inference_step_output = []
 
 
 def train():
@@ -160,12 +158,10 @@ def train():
         image_size=IMAGE_SIZE,
     )
     model = Model(
-        max_seq_len=Guide3D.max_seq_len,
+        tgt_max_len=Guide3D.max_seq_len,
         img_size=IMAGE_SIZE,
-        n_channels=N_CHANNELS,
-        d_model=256,
-        num_decoder_layers=6,
-        nhead=8,
+        num_channels=N_CHANNELS,
+        d_model=512,
     )
 
     trainer = pl.Trainer(
@@ -188,7 +184,7 @@ def dummy_run_2():
         n_channels=N_CHANNELS,
         image_size=IMAGE_SIZE,
     )
-    model = Model(max_seq_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, n_channels=N_CHANNELS)
+    model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS)
 
     trainer = pl.Trainer(
         max_epochs=200,

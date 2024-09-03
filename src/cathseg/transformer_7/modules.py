@@ -1,7 +1,10 @@
 import math
+from copy import deepcopy
+from typing import Tuple
 
 import torch
 import torch.nn as nn
+from torch import Tensor
 
 
 class SinusoidalEncoding(nn.Module):
@@ -63,56 +66,111 @@ class MLP(nn.Module):
         return self.mlp(x)
 
 
-class TransformerEncoderBlock(nn.Module):
+class TransformerEncoderLayer(nn.Module):
     def __init__(
         self,
-        embed_dim: int = 256,
+        d_model: int = 256,
         num_heads: int = 8,
-        mlp_intermed_size: int = 256 * 4,
-        attention_dropout_probs: float = 0.0,
-        mlp_dropout_prob: float = 0.0,
-        qkv_bias: bool = True,
+        ff_dim: int = 256 * 4,
+        dropout: float = 0.00,
     ):
         super().__init__()
 
-        self.mha_layer = nn.MultiheadAttention(
+        self.mha = nn.MultiheadAttention(
             batch_first=True,
-            embed_dim=embed_dim,
+            embed_dim=d_model,
             num_heads=num_heads,
-            dropout=attention_dropout_probs,
-            bias=qkv_bias,
+            dropout=dropout,
         )
+        self.mlp = MLP(d_model, ff_dim, dropout)
 
-        self.layer_norm_1 = nn.LayerNorm(embed_dim)
-        self.mlp_layer = MLP(embed_dim, mlp_intermed_size, mlp_dropout_prob)
-        self.layer_norm_2 = nn.LayerNorm(embed_dim)
+        self.mha_norm = nn.LayerNorm(d_model)
+        self.mlp_norm = nn.LayerNorm(d_model)
 
-    def forward(self, x, output_attentions=False):
-        attention_outtput, attention_weight = self.mha_layer(x, x, x)
-        x = self.layer_norm_1(x + attention_outtput)  # skip connection
-        mlp_output = self.mlp_layer(x)
-        x = self.layer_norm_2(x + mlp_output)  # skip connection
+    def forward(self, x):
+        attention_outtput, attentions = self.mha(x, x, x)
+        x = self.mha_norm(x + attention_outtput)
+        mlp_output = self.mlp(x)
+        x = self.mlp_norm(x + mlp_output)
 
-        if output_attentions:
-            return (x, attention_weight)
-        else:
-            return x, None
+        return x, attentions
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, num_layers: int = 6, **transformer_kwargs):
+    def __init__(
+        self,
+        layer=TransformerEncoderLayer,
+        num_layers: int = 6,
+    ):
         super().__init__()
+        self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
 
-        self.num_layers = num_layers
-        self.blocks = nn.ModuleList([TransformerEncoderBlock(**transformer_kwargs) for _ in range(num_layers)])
+    def forward(self, src):
+        all_attentions = []
+        for layer in self.layers:
+            x, attentions = layer(src)
+            all_attentions.append(attentions)
+        all_attentions = torch.stack(all_attentions)
+        return x, all_attentions
 
-    def forward(self, x, output_attentions=False):
-        all_attentions = []  # per layer attention
-        for layer in self.blocks:
-            x, attention_probs = layer(x, output_attentions)
-            if output_attentions:
-                all_attentions.append(attention_probs)
 
-        if output_attentions:
-            return (x, all_attentions)
-        return x, None
+class TransformerDecoderLayer(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, ff_dim: int, dropout: float):
+        super().__init__()
+        self.sa = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+        self.mha = nn.MultiheadAttention(d_model, num_heads, dropout=dropout, batch_first=True)
+
+        self.sa_norm = nn.LayerNorm(d_model)
+        self.mha_norm = nn.LayerNorm(d_model)
+
+        self.sa_dropout = nn.Dropout(dropout)
+        self.mha_dropout = nn.Dropout(dropout)
+
+        self.ff = nn.Sequential(
+            nn.Linear(d_model, ff_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout(p=dropout),
+            nn.Linear(ff_dim, d_model),
+        )
+
+        self.ff_norm = nn.LayerNorm(d_model)
+        self.ff_dropout = nn.Dropout(dropout)
+
+    def forward(self, enc_outputs: Tensor, dec_inputs: Tensor, tgt_mask: Tensor, tgt_pad_mask: Tensor):
+        output, _ = self.sa(dec_inputs, dec_inputs, dec_inputs, attn_mask=tgt_mask, key_padding_mask=tgt_pad_mask)
+        output = dec_inputs + self.sa_dropout(output)
+        output = self.sa_norm(output)
+
+        output2, attentions = self.mha(output, enc_outputs, enc_outputs)
+        output = output + self.mha_dropout(output2)
+        output = self.mha_norm(output)
+
+        output2 = self.ff(output)
+        output = self.ff_norm(output + self.ff_dropout(output2))
+
+        return output, attentions
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(
+        self,
+        layer: TransformerDecoderLayer,
+        num_layers: int,
+        dropout: float,
+    ):
+        super().__init__()
+        self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
+        self.dropout = nn.Dropout(p=dropout)
+
+    def forward(
+        self, memory: Tensor, tgt: Tensor, tgt_mask: Tensor = None, tgt_pad_mask: Tensor = None
+    ) -> Tuple[Tensor, Tensor]:
+        tgt = self.dropout(tgt)
+
+        all_attentions = []
+        for layer in self.layers:
+            tgt, attentions = layer(memory, tgt, tgt_mask, tgt_pad_mask)
+            all_attentions.append(attentions)
+        # [layer_num, batch_size, head_num, max_len, encode_size**2]
+        all_attentions = torch.stack(all_attentions)
+        return tgt, all_attentions

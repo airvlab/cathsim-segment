@@ -1,7 +1,14 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from cathseg.transformer_7.modules import PatchEmbeddings, SinusoidalEncoding, TransformerEncoder
+from cathseg.transformer_7.modules import (
+    PatchEmbeddings,
+    SinusoidalEncoding,
+    TransformerDecoder,
+    TransformerDecoderLayer,
+    TransformerEncoder,
+    TransformerEncoderLayer,
+)
 
 
 class SplineTransformer(nn.Module):
@@ -10,87 +17,85 @@ class SplineTransformer(nn.Module):
         image_size: int = 224,
         num_channels: int = 3,
         patch_size: int = 32,
-        embed_dim: int = 256,
+        d_model: int = 256,
         num_layers_encoder: int = 6,
         num_layers_decoder: int = 6,
         num_heads: int = 8,
-        qkv_bias: bool = False,
-        attention_dropout_probs: float = 0.0,
-        hidden_dropout_prob: float = 0.1,
-        transformer_decoder_dropout_prob: float = 0.1,
-        mlp_dropout_prob: float = 0.1,
+        dropout: float = 0.1,
         dim_pts: int = 2,
         tgt_max_len: int = 20,
     ):
         super().__init__()
 
         self.patch_embedding = PatchEmbeddings(
-            img_size=image_size, num_channels=num_channels, patch_size=patch_size, embed_dim=embed_dim
+            img_size=image_size, num_channels=num_channels, patch_size=patch_size, embed_dim=d_model
         )
-        self.seq_len = self.patch_embedding.num_patches
-        self.positional_encoding = SinusoidalEncoding(d_model=embed_dim, max_len=self.seq_len)
+        self.src_seq_len = self.patch_embedding.num_patches
+        self.positional_encoding = SinusoidalEncoding(d_model=d_model, max_len=self.src_seq_len)
+
+        self.transformer_encoder_layer = TransformerEncoderLayer(
+            d_model=d_model,
+            num_heads=num_heads,
+            ff_dim=d_model * 4,
+            dropout=dropout,
+        )
 
         self.transformer_encoder = TransformerEncoder(
+            layer=self.transformer_encoder_layer,
             num_layers=num_layers_encoder,
-            embed_dim=embed_dim,
+        )
+
+        self.target_embedding = nn.Linear(dim_pts + 1, d_model)
+        self.target_sinuisodal_encoding = SinusoidalEncoding(d_model=d_model, max_len=tgt_max_len)
+
+        self.transformer_decoder_layer = TransformerDecoderLayer(
+            d_model=d_model,
             num_heads=num_heads,
-            mlp_intermed_size=embed_dim * 4,
-            qkv_bias=qkv_bias,
-            attention_dropout_probs=attention_dropout_probs,
-            mlp_dropout_prob=mlp_dropout_prob,
+            ff_dim=d_model * 4,
+            dropout=dropout,
         )
 
-        self.target_embedding = nn.Linear(dim_pts + 1, embed_dim)
-        self.target_sinuisodal_encoding = SinusoidalEncoding(d_model=embed_dim, max_len=tgt_max_len)
-        transformer_decoder_layer = nn.TransformerDecoderLayer(
-            batch_first=True,
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=embed_dim * 4,
-            dropout=transformer_decoder_dropout_prob,
+        self.transformer_decoder = TransformerDecoder(
+            layer=self.transformer_decoder_layer,
+            num_layers=num_layers_decoder,
+            dropout=dropout,
         )
-        self.transformer_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers_decoder)
 
-        self.fc_seq = nn.Sequential(nn.Linear(embed_dim, 1 + dim_pts))  # Predicting n_dim control and 1D knots
-        self.fc_eos = nn.Sequential(nn.Linear(embed_dim, 1), nn.Sigmoid())  # Predicting end-of-sequence token
+        self.fc_seq = nn.Sequential(nn.Linear(d_model, 1 + dim_pts))  # Predicting n_dim control and 1D knots
+        self.fc_eos = nn.Sequential(nn.Linear(d_model, 1), nn.Sigmoid())  # Predicting end-of-sequence token
 
-    def encode(self, src: torch.Tensor, output_attentions=False) -> torch.Tensor:
+    def encode(self, src: torch.Tensor) -> torch.Tensor:
         src = self.patch_embedding(src)
         src = self.positional_encoding(src)
-        memory, attention_weight = self.transformer_encoder(src, output_attentions=output_attentions)
-        return memory, attention_weight
+        memory, attentions = self.transformer_encoder(src)
+        return memory, attentions
 
     def decode(
         self,
         memory: torch.Tensor,
         tgt: torch.Tensor,
         tgt_mask: torch.Tensor = None,
-        tgt_key_padding_mask: torch.Tensor = None,
+        tgt_pad_mask: torch.Tensor = None,
     ) -> torch.Tensor:
         tgt = self.target_embedding(tgt)
         tgt = self.target_sinuisodal_encoding(tgt)
-
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.size(1)).to(device=tgt.device)
-
-        output = self.transformer_decoder(
-            tgt=tgt, memory=memory, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask
+        output, attenntions = self.transformer_decoder(
+            memory=memory, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask
         )
-
-        return output
+        return output, attenntions
 
     def forward(
         self,
         src: torch.Tensor,
         tgt: torch.Tensor,
         tgt_mask: torch.Tensor = None,
-        tgt_key_padding_mask: torch.Tensor = None,
-        output_attentions=False,
+        tgt_pad_mask: torch.Tensor = None,
     ):
-        memory, attention_weights = self.encode(src=src, output_attentions=output_attentions)
-        output = self.decode(memory=memory, tgt=tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask)
+        memory, encoder_attentions = self.encode(src=src)
+        output, decoder_attentions = self.decode(memory=memory, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask)
         seq = self.fc_seq(output)
         eos = self.fc_eos(output)
-        return seq, eos, memory, attention_weights
+        return seq, eos, memory, encoder_attentions, decoder_attentions
 
 
 def main():
@@ -111,7 +116,7 @@ def main():
         image_size=image_size,
         num_channels=num_channels,
         patch_size=patch_size,
-        embed_dim=256,
+        d_model=256,
         num_layers_encoder=6,
         num_heads=8,
     )
