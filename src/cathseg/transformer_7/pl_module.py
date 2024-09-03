@@ -115,11 +115,11 @@ class SplineFormer(pl.LightningModule):
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(device=tgt_input.device)
 
         # Forward pass
-        pred_seq, eos_pred, memory, encoder_atts, decoder_atts = self(imgs, tgt_input, tgt_mask, tgt_pad_mask)
+        pred_seq, eos_pred, _, _, _ = self(imgs, tgt_input, tgt_mask, tgt_pad_mask)
 
         # Compute losses
         loss_seq = self.criterion_seq(pred_seq, tgt_output)
-        loss_eos = self.criterion_eos(eos_pred, eos_labels)  # (batch_size, seq_len)
+        loss_eos = self.criterion_eos(eos_pred, eos_labels)
 
         # Apply the mask to the losses
         loss_seq = loss_seq * tgt_pad_mask.unsqueeze(-1)

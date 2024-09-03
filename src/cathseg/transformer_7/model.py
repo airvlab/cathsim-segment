@@ -9,6 +9,7 @@ from cathseg.transformer_7.modules import (
     TransformerEncoder,
     TransformerEncoderLayer,
 )
+from torch import Tensor
 
 
 class SplineTransformer(nn.Module):
@@ -33,30 +34,24 @@ class SplineTransformer(nn.Module):
         self.src_seq_len = self.patch_embedding.num_patches
         self.positional_encoding = SinusoidalEncoding(d_model=d_model, max_len=self.src_seq_len)
 
-        self.transformer_encoder_layer = TransformerEncoderLayer(
-            d_model=d_model,
-            num_heads=num_heads,
-            ff_dim=d_model * 4,
-            dropout=dropout,
+        transformer_encoder_layer = TransformerEncoderLayer(
+            d_model=d_model, num_heads=num_heads, ff_dim=d_model * 4, dropout=dropout
         )
 
         self.transformer_encoder = TransformerEncoder(
-            layer=self.transformer_encoder_layer,
+            layer=transformer_encoder_layer,
             num_layers=num_layers_encoder,
         )
 
         self.target_embedding = nn.Linear(dim_pts + 1, d_model)
         self.target_sinuisodal_encoding = SinusoidalEncoding(d_model=d_model, max_len=tgt_max_len)
 
-        self.transformer_decoder_layer = TransformerDecoderLayer(
-            d_model=d_model,
-            num_heads=num_heads,
-            ff_dim=d_model * 4,
-            dropout=dropout,
+        transformer_decoder_layer = TransformerDecoderLayer(
+            d_model=d_model, num_heads=num_heads, ff_dim=d_model * 4, dropout=dropout
         )
 
         self.transformer_decoder = TransformerDecoder(
-            layer=self.transformer_decoder_layer,
+            layer=transformer_decoder_layer,
             num_layers=num_layers_decoder,
             dropout=dropout,
         )
@@ -64,19 +59,13 @@ class SplineTransformer(nn.Module):
         self.fc_seq = nn.Sequential(nn.Linear(d_model, 1 + dim_pts))  # Predicting n_dim control and 1D knots
         self.fc_eos = nn.Sequential(nn.Linear(d_model, 1), nn.Sigmoid())  # Predicting end-of-sequence token
 
-    def encode(self, src: torch.Tensor) -> torch.Tensor:
+    def encode(self, src: Tensor) -> torch.Tensor:
         src = self.patch_embedding(src)
         src = self.positional_encoding(src)
         memory, attentions = self.transformer_encoder(src)
         return memory, attentions
 
-    def decode(
-        self,
-        memory: torch.Tensor,
-        tgt: torch.Tensor,
-        tgt_mask: torch.Tensor = None,
-        tgt_pad_mask: torch.Tensor = None,
-    ) -> torch.Tensor:
+    def decode(self, memory: Tensor, tgt: Tensor, tgt_mask: Tensor = None, tgt_pad_mask: Tensor = None) -> Tensor:
         tgt = self.target_embedding(tgt)
         tgt = self.target_sinuisodal_encoding(tgt)
         output, attenntions = self.transformer_decoder(
@@ -84,13 +73,7 @@ class SplineTransformer(nn.Module):
         )
         return output, attenntions
 
-    def forward(
-        self,
-        src: torch.Tensor,
-        tgt: torch.Tensor,
-        tgt_mask: torch.Tensor = None,
-        tgt_pad_mask: torch.Tensor = None,
-    ):
+    def forward(self, src: Tensor, tgt: Tensor, tgt_mask: Tensor = None, tgt_pad_mask: Tensor = None):
         memory, encoder_attentions = self.encode(src=src)
         output, decoder_attentions = self.decode(memory=memory, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask)
         seq = self.fc_seq(output)
