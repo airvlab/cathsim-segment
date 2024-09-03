@@ -4,6 +4,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
+from einops.layers.torch import Rearrange
 from torch import Tensor
 
 
@@ -33,37 +34,46 @@ class SinusoidalEncoding(nn.Module):
 
 
 class PatchEmbeddings(nn.Module):
-    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, embed_dim: int = 768):
+    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, dim: int = 768):
         super().__init__()
         self.img_size = img_size
         self.num_channels = num_channels
         self.patch_size = patch_size
-        self.embed_dim = embed_dim
+        self.embed_dim = dim
+
+        patch_width, patch_height = patch_size, patch_size
+        patch_dim = num_channels * patch_size * patch_size
 
         assert img_size % patch_size == 0, "Image size must be divisible by patch size"
         self.num_patches = (img_size // patch_size) ** 2
-        self.projection = nn.Conv2d(
-            self.num_channels, self.embed_dim, kernel_size=self.patch_size, stride=self.patch_size
+
+        self.to_patch_embedding = nn.Sequential(
+            Rearrange("b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_height, p2=patch_width),
+            nn.LayerNorm(patch_dim),
+            nn.Linear(patch_dim, dim),
+            nn.LayerNorm(dim),
         )
+        # self.projection = nn.Conv2d(
+        #     self.num_channels, self.embed_dim, kernel_size=self.patch_size, stride=self.patch_size
+        # )
 
     def forward(self, x: torch.Tensor):
-        x = self.projection(x)  # (batch_size, emb_size, n_patches, n_patches)
-        x = x.flatten(2).transpose(1, 2)  # (batch_size, n_patches^2, emb_size)
+        x = self.to_patch_embedding(x)  # (batch_size, emb_size, n_patches, n_patches)
+        # x = x.flatten(2).transpose(1, 2)  # (batch_size, n_patches^2, emb_size)
         return x
 
 
-class MLP(nn.Module):
-    def __init__(self, embed_dim: int = 256, hidden_size: int = 256 * 4, dropout_prob: float = 0.0):
+class FeedForward(nn.Module):
+    def __init__(self, embed_dim: int = 256, hidden_size: int = 256 * 4):
         super().__init__()
-        self.mlp = nn.Sequential(
+        self.ff = nn.Sequential(
             nn.Linear(embed_dim, hidden_size),
             nn.GELU(),
             nn.Linear(hidden_size, embed_dim),
-            nn.Dropout(dropout_prob),
         )
 
     def forward(self, x):
-        return self.mlp(x)
+        return self.ff(x)
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -82,16 +92,16 @@ class TransformerEncoderLayer(nn.Module):
             num_heads=num_heads,
             dropout=dropout,
         )
-        self.mlp = MLP(d_model, ff_dim, dropout)
+        self.ff = FeedForward(d_model, ff_dim)
 
         self.mha_norm = nn.LayerNorm(d_model)
-        self.mlp_norm = nn.LayerNorm(d_model)
+        self.ff_norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
         attention_outtput, attentions = self.mha(x, x, x)
         x = self.mha_norm(x + attention_outtput)
-        mlp_output = self.mlp(x)
-        x = self.mlp_norm(x + mlp_output)
+        mlp_output = self.ff(x)
+        x = self.ff_norm(x + mlp_output)
 
         return x, attentions
 
@@ -110,7 +120,7 @@ class TransformerEncoder(nn.Module):
         for layer in self.layers:
             x, attentions = layer(src)
             all_attentions.append(attentions)
-        all_attentions = torch.stack(all_attentions)
+        all_attentions = torch.stack(all_attentions, dim=1)
         return x, all_attentions
 
 
@@ -171,6 +181,5 @@ class TransformerDecoder(nn.Module):
         for layer in self.layers:
             tgt, attentions = layer(memory, tgt, tgt_mask, tgt_pad_mask)
             all_attentions.append(attentions)
-        # [layer_num, batch_size, head_num, max_len, encode_size**2]
-        all_attentions = torch.stack(all_attentions)
+        all_attentions = torch.stack(all_attentions, dim=1)
         return tgt, all_attentions
