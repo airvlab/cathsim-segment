@@ -1,13 +1,10 @@
-import math
-
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data as data
-from cathseg.transformer_7.vit import Encoder
-from torchvision.models import ViT_B_16_Weights, vit_b_16
+from cathseg.transformer_7.model import SplineTransformer as Model
 from torchvision.transforms import transforms
 
 MAX_LEN = 20
@@ -28,7 +25,7 @@ vit_transform = transforms.Compose(
 )
 
 
-def c_transform(c, c_min = 0, c_max = 1):
+def c_transform(c, c_min=0, c_max=1):
     c_max = IMAGE_SIZE
     return (c - c_min) / (c_max - c_min)
 
@@ -37,7 +34,7 @@ def t_transform(t):
     return t / 1500
 
 
-def c_untransform(c, c_min = 0, c_max = 1):
+def c_untransform(c, c_min=0, c_max=1):
     c_max = IMAGE_SIZE
     return c * (c_max + c_min) + c_min
 
@@ -51,119 +48,34 @@ def unnorm(img):
     return img
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, max_len: int, dropout: float = 0.1):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(1e4) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-
-        # Unsqueeze and transpose to make it [1, max_len, d_model]
-        pe = pe.unsqueeze(0)
-
-        # Register as a buffer so it's not considered as a parameter
-        self.register_buffer("pe", pe)
-
-    def forward(self, x):
-        # x is assumed to have shape [batch_size, seq_len, d_model]
-        seq_len = x.size(1)
-        # Add positional encoding to the input tensor
-        x = x + self.pe[:, :seq_len, :]
-        return self.dropout(x)
-
-
-class ViTEncoder(nn.Module):
-    def __init__(self, n_channels, image_shape, output_dim=512, pretrained=True):
-        super(ViTEncoder, self).__init__()
-
-        # Map to img size
-        self.initial_pooling = nn.AdaptiveAvgPool2d((224, 224))
-
-        # Load the pretrained ViT model
-        if pretrained:
-            self.vit = vit_b_16(weights=ViT_B_16_Weights.IMAGENET1K_V1)
-        else:
-            self.vit = vit_b_16(weights=None)
-
-        # Freeze the parameters
-        for param in self.vit.parameters():
-            param.requires_grad = False
-
-        # Adjust the input layer if the number of channels is different from 3
-        if n_channels != 3:
-            self.vit.conv_proj = nn.Conv2d(n_channels, self.vit.conv_proj.out_channels, kernel_size=16, stride=16)
-
-        # Remove the classification head
-        self.vit.heads = nn.Identity()
-
-        # Add a projection layer to match the desired output dimension if specified
-        self.output_dim = output_dim
-        if output_dim != self.vit.hidden_dim:
-            self.proj = nn.Linear(self.vit.hidden_dim, output_dim)
-        else:
-            self.proj = nn.Identity()
-
-    def forward(self, x):
-        x = self.initial_pooling(x)
-        x = self.vit(x)
-        # Project to the desired output dimension
-        x = self.proj(x)
-
-        return x
-
-
-class ImageToSequenceTransformer(pl.LightningModule):
+class SplineFormer(pl.LightningModule):
     def __init__(
         self,
         max_seq_len: int,
-        n_channels: int = 3,
-        img_size: tuple = (224, 224),
+        n_channels: int = 1,
+        img_size: tuple = 1024,
         d_model: int = 512,
-        num_decoder_layers: int = 6,
         nhead: int = 8,
         dim_feedforward: int = 512,
         dropout: float = 0.1,
         n_dim: int = 2,
+        **model_kwargs,
     ):
-        super(ImageToSequenceTransformer, self).__init__()
+        super(SplineFormer, self).__init__()
         self.save_hyperparameters()
 
         self.n_dim = n_dim
 
-        self.encoder = Encoder(
+        self.model = Model(
             image_size=img_size,
-            n_channels=n_channels,
-            patch_size=16,
+            num_channels=n_channels,
+            patch_size=32,
             embed_dim=d_model,
-            num_layers=6,
-            num_heads=8,
-            qkv_bias=True,
-            hidden_dropout_prob=0.1,
-            mlp_dropout_prob=0.1,
-            attention_dropout_probs=0.1
+            num_layers_encoder=6,
+            num_layers_decoder=6,
+            num_heads=nhead,
+            tgt_max_len=max_seq_len,
         )
-
-        self.pos_encoder = PositionalEncoding(d_model, max_seq_len, dropout)
-
-        decoder_layer = nn.TransformerDecoderLayer(
-            batch_first=True,
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-        )
-        self.transformer_decoder = nn.TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
-
-        # Output layers for coefficients `c` and knots `t` and end-of-sequence token `eos`
-        self.fc_seq = nn.Sequential(nn.Linear(d_model, 1 + self.n_dim))  # Predicting n_dim control and 1D knots
-        self.fc_eos = nn.Sequential(nn.Linear(d_model, 1), nn.Sigmoid())  # Predicting end-of-sequence token
-
-        # Embedding layer for target sequence
-        self.target_embedding = nn.Linear(1 + self.n_dim, d_model)
 
         # Loss functions
         self.criterion_seq = nn.MSELoss(reduction="none")
@@ -178,35 +90,16 @@ class ImageToSequenceTransformer(pl.LightningModule):
 
         self.training_step_output = None
 
-    def forward(self, img, target_seq, target_mask):
-        features = self.encoder(img)  #  (batch_size, d_model)
-
-        features = features.unsqueeze(1)  # (batch_size, 1, d_model)
-
-        target_seq = self.target_embedding(target_seq)  # (batch_size, seq_len, d_model)
-        target_seq = self.pos_encoder(target_seq)  # (batch_size, seq_len, d_model)
-
-        tgt_key_padding_mask = target_mask.to(dtype=torch.float)
-
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(target_seq.size(1)).to(device=target_seq.device)
-
-        decoder_output = self.transformer_decoder(
-            tgt=target_seq,
-            memory=features,
-            tgt_mask=tgt_mask,
-            tgt_key_padding_mask=tgt_key_padding_mask,
+    def forward(self, img, target_seq, tgt_key_padding_mask):
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(img.size(1)).to(device=img.device)
+        seq_pred, eos_pred, memory, attentions = self.model(
+            src=img, tgt=target_seq, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask
         )
 
-        seq_pred = self.fc_seq(decoder_output)  #  (batch_size, seq_len, 3)
-        eos_pred = self.fc_eos(decoder_output)  #  (batch_size, seq_len, 1)
-
-        return seq_pred, eos_pred.squeeze(-1)
-
-    def decompose_prediction(self, seq_pred, eos_pred):
-        pass
+        return seq_pred, eos_pred.squeeze(-1), memory, attentions
 
     def _step(self, batch, batch_idx):
-        imgs, target_seq, target_mask = batch
+        imgs, target_seq, tgt_key_padding_mask = batch
 
         init_token = self.init_token.expand(target_seq.size(0), -1, -1).to(device=target_seq.device)
         target_seq = torch.cat([init_token, target_seq], 1)
@@ -215,25 +108,26 @@ class ImageToSequenceTransformer(pl.LightningModule):
         target_seq = target_seq[:, 1:, :]
 
         # Create EOS labels: 1 for the last valid token, 0 otherwise
-        eos_labels = torch.zeros_like(target_mask)
-        eos_labels[torch.arange(target_mask.size(0)), (target_mask.sum(dim=1) - 1).long()] = 1
+        eos_labels = torch.zeros_like(tgt_key_padding_mask)
+        eos_labels[torch.arange(tgt_key_padding_mask.size(0)), (tgt_key_padding_mask.sum(dim=1) - 1).long()] = 1
         eos_labels = eos_labels.float()
 
+        tgt_key_padding_mask = tgt_key_padding_mask.to(dtype=torch.float)
         # Forward pass
-        pred_seq, eos_pred = self(imgs, target_input, target_mask)
+        pred_seq, eos_pred, memory, attentions = self(imgs, target_input, tgt_key_padding_mask)
 
         # Compute losses
         loss_seq = self.criterion_seq(pred_seq, target_seq)
         loss_eos = self.criterion_eos(eos_pred, eos_labels)  # (batch_size, seq_len)
 
         # Apply the mask to the losses
-        loss_seq = loss_seq * target_mask.unsqueeze(-1)
-        loss_eos = loss_eos * target_mask
+        loss_seq = loss_seq * tgt_key_padding_mask.unsqueeze(-1)
+        loss_eos = loss_eos * tgt_key_padding_mask
 
         # Compute the total loss as a weighted sum
         loss = self.lambda_seq * loss_seq.sum() + self.lambda_eos * loss_eos.sum()
 
-        seq_lens = target_mask.sum(dim=1)
+        seq_lens = tgt_key_padding_mask.sum(dim=1)
 
         if batch_idx == 0:
             self.training_step_output = [
@@ -271,19 +165,12 @@ class ImageToSequenceTransformer(pl.LightningModule):
         with torch.no_grad():
             # Add batch dimension to the input tensor
             X = X.unsqueeze(0)  # (1, input_dim)
-            features = self.encoder(X).unsqueeze(0)  # (1, d_model)
 
             # Initialize the generated sequence with start token (all zeros)
             generated_seq = torch.zeros(1, 1, 3).to(X.device)  # (1, 1, 3)
 
             for i in range(self.max_seq_len):
-                target_seq = self.pos_encoder(self.target_embedding(generated_seq))  # (1, seq_len, d_model)
-
-                decoder_output = self.transformer_decoder(tgt=target_seq, memory=features)  # (1, seq_len, d_model)
-
-                # Generate predictions
-                seq_pred = self.fc_seq(decoder_output)
-                eos_pred = self.fc_eos(decoder_output)
+                seq_pred, eos_pred, memory, attentions = self.model(src=X, tgt=generated_seq)
 
                 # Take the last prediction for each component
                 last_pt_pred = seq_pred[:, -1:, :]
@@ -350,14 +237,12 @@ def plot_instance(instance, dataset):
 
 
 def main():
-    from pathlib import Path
-
     from guide3d.dataset.image.spline import Guide3D
 
     # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
     dataset = Guide3D(
         dataset_path="/tmp/guide3d/guide3d/",
-        download = True,
+        download=True,
         image_transform=vit_transform,
         c_transform=c_transform,
         t_transform=t_transform,
@@ -365,7 +250,7 @@ def main():
 
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=False)
 
-    model = ImageToSequenceTransformer(max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMAGE_SIZE)
+    model = SplineFormer(max_seq_len=dataset.max_length, n_channels=N_CHANNELS, img_size=IMAGE_SIZE)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop

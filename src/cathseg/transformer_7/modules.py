@@ -1,316 +1,118 @@
-import functools as ft
+import math
 
-import numpy as np
-import torch as th
+import torch
 import torch.nn as nn
 
 
-class PositionalEncoding(nn.Module):
-    def __init__(self, seq_length, in_dim, drop_val=0.1):
-        super(PositionalEncoding, self).__init__()
-        pos = np.arange(0, seq_length)[:, None]
-        idx = np.fromfunction(lambda _, j: j - j % 2, shape=(1, in_dim))
-        mask = np.fromfunction(lambda _, j: j % 2 == 0, shape=(1, in_dim))
+class SinusoidalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int, dropout: float = 0.1):
+        super(SinusoidalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
 
-        pnt = pos / (10000 ** (idx / in_dim))
-        val = np.sin(pnt) * mask + np.cos(pnt) * (1 - mask)
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(1e4) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
 
-        self.drop_layer = nn.Dropout(drop_val)
-        self.register_buffer("psne_layer", th.tensor(val).float())
+        # Unsqueeze and transpose to make it [1, max_len, d_model]
+        pe = pe.unsqueeze(0)
 
-    def forward(self, src):
-        _, seq_length, _ = src.shape
-        pos = self.psne_layer[:seq_length, :][None, ...]
-        return self.drop_layer(src + pos)
+        # Register as a buffer so it's not considered as a parameter
+        self.register_buffer("pe", pe)
 
-
-class FeedForwardNetwork(nn.Module):
-    __THETA = {  # map id to non_linear
-        0: nn.Identity(),
-        1: nn.ReLU(),
-        2: nn.GELU(),
-        3: nn.Sigmoid(),
-        4: nn.Tanh(),
-        5: nn.Softmax(dim=-1),
-    }
-
-    def __init__(self, layer_cfg, activations, drop_vals):
-        super(FeedForwardNetwork, self).__init__()
-        self.shapes = list(zip(layer_cfg[:-1], layer_cfg[1:]))
-        self.linears = nn.ModuleList([])
-        for idx, (in_dim, out_dim) in enumerate(self.shapes):
-            fn_id = activations[idx]
-            proba = drop_vals[idx]
-            block = nn.Sequential(
-                nn.Linear(in_dim, out_dim),
-                nn.Dropout(proba) if proba > 0.0 else nn.Identity(),
-                FeedForwardNetwork.__THETA.get(fn_id, nn.Identity()),
-            )
-            self.linears.append(block)
-
-    def forward(self, input_batch):
-        output_batch = ft.reduce(  # functools
-            lambda acc, crr: crr(acc), self.linears, input_batch
-        )
-        return output_batch
+    def forward(self, x):
+        # x is assumed to have shape [batch_size, seq_len, d_model]
+        seq_len = x.size(1)
+        # Add positional encoding to the input tensor
+        x = x + self.pe[:, :seq_len, :]
+        return self.dropout(x)
 
 
-class MultiHeadCrossAttention(nn.Module):
-    def __init__(self, in_dim, nb_heads):
-        super(MultiHeadCrossAttention, self).__init__()
-        self.nbr_heads = nb_heads
-        self.heads_dim = in_dim // nb_heads
+class PatchEmbeddings(nn.Module):
+    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, embed_dim: int = 768):
+        super().__init__()
+        self.img_size = img_size
+        self.num_channels = num_channels
+        self.patch_size = patch_size
+        self.embed_dim = embed_dim
 
-        self.to_qry = nn.Linear(in_dim, in_dim)
-        self.to_key = nn.Linear(in_dim, in_dim)
-        self.to_val = nn.Linear(in_dim, in_dim)
-        self.to_out = nn.Linear(in_dim, in_dim)
-
-    def __rearrange(self, seq):
-        bt_size, seq_length, _ = seq.shape  # unpack shape
-        seq = seq.reshape(bt_size, seq_length, self.nbr_heads, self.heads_dim).permute(0, 2, 1, 3)
-        return seq
-
-    def forward(self, qry, key, val, mask=None, key_padding_mask=None):
-        qry = self.to_qry(qry)
-        key = self.to_key(key)
-        val = self.to_val(val)
-
-        qry = self.__rearrange(qry)
-        key = self.__rearrange(key)
-        val = self.__rearrange(val)
-
-        dim = qry.shape[-1]
-
-        wgt = qry @ key.transpose(-2, -1)
-        wgt = wgt / np.sqrt(dim)
-        if mask is not None:
-            wgt = wgt.masked_fill(mask, float("-inf"))
-        if key_padding_mask is not None:
-            cnd = key_padding_mask[:, None, None, :]
-            wgt = wgt.masked_fill(cnd, float("-inf"))
-        wgt = th.softmax(wgt, dim=-1)
-
-        res = wgt @ val
-        res = res.permute(0, 2, 1, 3)  # permute head and sequence
-        res = th.flatten(res, start_dim=2)  # concat over heads
-        res = self.to_out(res)
-
-        return res
-
-
-class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, in_dim, nb_heads):
-        super(MultiHeadSelfAttention, self).__init__()
-
-        self.nbr_heads = nb_heads
-        self.heads_dim = in_dim // nb_heads
-        self.qkv_layer = nn.Linear(in_dim, 3 * in_dim)
-        self.out_layer = nn.Linear(in_dim, in_dim)
-
-    def forward(self, src, mask=None, key_padding_mask=None):
-        bt_size, seq_length, _ = src.shape  # unpack shape
-
-        qkv = self.qkv_layer(src)  # extract query, key and value
-        qkv = qkv.reshape(bt_size, seq_length, self.nbr_heads, 3 * self.heads_dim)
-        qkv = qkv.permute(0, 2, 1, 3)  # permute head and sequence
-        qry, key, val = th.chunk(qkv, 3, dim=-1)
-
-        dim = qry.shape[-1]
-        wgt = qry @ key.transpose(-2, -1)  # hidden_dim and sequence_dim
-        wgt = wgt / np.sqrt(dim)  # normalize
-        if mask is not None:
-            wgt = wgt.masked_fill(mask, float("-inf"))
-        if key_padding_mask is not None:
-            cnd = key_padding_mask[:, None, None, :]
-            wgt = wgt.masked_fill(cnd, float("-inf"))
-        wgt = th.softmax(wgt, dim=-1)
-
-        res = wgt @ val
-        res = res.permute(0, 2, 1, 3)  # permute head and sequence
-        res = th.flatten(res, start_dim=2)  # concat over heads
-        res = self.out_layer(res)
-
-        return res
-
-
-class EncoderBlock(nn.Module):
-    def __init__(self, in_dim, ff_dim, nb_heads, drop_val=0.1, pre_norm=False):
-        super(EncoderBlock, self).__init__()
-        assert in_dim % nb_heads == 0
-
-        self.nbr_heads = nb_heads
-        self.heads_dim = in_dim // nb_heads
-
-        self.mha_layer = MultiHeadSelfAttention(in_dim, nb_heads)
-        self.ffn_layer = FeedForwardNetwork([in_dim, ff_dim, in_dim], [1, 0], [drop_val, 0.0])
-
-        self.dropout_layer = nn.ModuleDict({"mha": nn.Dropout(drop_val), "ffn": nn.Dropout(drop_val)})
-        self.layer_normalz = nn.ModuleDict(
-            {
-                "mha": nn.ModuleList(
-                    [
-                        nn.LayerNorm(in_dim) if pre_norm else nn.Identity(),
-                        nn.LayerNorm(in_dim) if not pre_norm else nn.Identity(),
-                    ]
-                ),
-                "ffn": nn.ModuleList(
-                    [
-                        nn.LayerNorm(in_dim) if pre_norm else nn.Identity(),
-                        nn.LayerNorm(in_dim) if not pre_norm else nn.Identity(),
-                    ]
-                ),
-            }
+        assert img_size % patch_size == 0, "Image size must be divisible by patch size"
+        self.num_patches = (img_size // patch_size) ** 2
+        self.projection = nn.Conv2d(
+            self.num_channels, self.embed_dim, kernel_size=self.patch_size, stride=self.patch_size
         )
 
-    def forward(self, src, src_mask=None, src_key_padding_mask=None):
-        # multi head self attention
-        tmp = self.layer_normalz["mha"][0](src)
-        out = self.mha_layer(tmp, src_mask, src_key_padding_mask)
-        out = self.dropout_layer["mha"](out)
-        agg = tmp + out
-        agg = self.layer_normalz["mha"][1](agg)
-
-        # feed forward network
-        tmp = self.layer_normalz["ffn"][0](agg)
-        out = self.ffn_layer(tmp)
-        out = self.dropout_layer["ffn"](out)
-        agg = tmp + out
-        agg = self.layer_normalz["ffn"][1](agg)
-
-        return agg
+    def forward(self, x: torch.Tensor):
+        x = self.projection(x)  # (batch_size, emb_size, n_patches, n_patches)
+        x = x.flatten(2).transpose(1, 2)  # (batch_size, n_patches^2, emb_size)
+        return x
 
 
-class DecoderBlock(nn.Module):
-    def __init__(self, in_dim, ff_dim, nb_heads, drop_val=0.1, pre_norm=False):
-        super(DecoderBlock, self).__init__()
-        assert in_dim % nb_heads == 0
-
-        self.nbr_heads = nb_heads
-        self.heads_dim = in_dim // nb_heads
-
-        self.mha_layer = MultiHeadSelfAttention(in_dim, nb_heads)
-        self.crx_layer = MultiHeadCrossAttention(in_dim, nb_heads)
-        self.ffn_layer = FeedForwardNetwork([in_dim, ff_dim, in_dim], [1, 0], [drop_val, 0.0])
-
-        self.dropout_layer = nn.ModuleDict(
-            {"mha": nn.Dropout(drop_val), "crx": nn.Dropout(drop_val), "ffn": nn.Dropout(drop_val)}
-        )
-        self.layer_normalz = nn.ModuleDict(
-            {
-                "mha": nn.ModuleList(
-                    [
-                        nn.LayerNorm(in_dim) if pre_norm else nn.Identity(),
-                        nn.LayerNorm(in_dim) if not pre_norm else nn.Identity(),
-                    ]
-                ),
-                "crx": nn.ModuleList(
-                    [
-                        nn.LayerNorm(in_dim) if pre_norm else nn.Identity(),
-                        nn.LayerNorm(in_dim) if not pre_norm else nn.Identity(),
-                    ]
-                ),
-                "ffn": nn.ModuleList(
-                    [
-                        nn.LayerNorm(in_dim) if pre_norm else nn.Identity(),
-                        nn.LayerNorm(in_dim) if not pre_norm else nn.Identity(),
-                    ]
-                ),
-            }
+class MLP(nn.Module):
+    def __init__(self, embed_dim: int = 256, hidden_size: int = 256 * 4, dropout_prob: float = 0.0):
+        super().__init__()
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, hidden_size),
+            nn.GELU(),
+            nn.Linear(hidden_size, embed_dim),
+            nn.Dropout(dropout_prob),
         )
 
-    def forward(
-        self, tgt, memory, tgt_mask=None, memory_mask=None, tgt_key_padding_mask=None, memory_key_padding_mask=None
+    def forward(self, x):
+        return self.mlp(x)
+
+
+class TransformerEncoderBlock(nn.Module):
+    def __init__(
+        self,
+        embed_dim: int = 256,
+        num_heads: int = 8,
+        mlp_intermed_size: int = 256 * 4,
+        attention_dropout_probs: float = 0.0,
+        mlp_dropout_prob: float = 0.0,
+        qkv_bias: bool = True,
     ):
-        # masked multi head attention
-        tmp = self.layer_normalz["mha"][0](tgt)
-        out = self.mha_layer(tmp, tgt_mask, tgt_key_padding_mask)
-        out = self.dropout_layer["mha"](out)
-        agg = tmp + out  # residual
-        agg = self.layer_normalz["mha"][1](agg)
+        super().__init__()
 
-        # cross multi head attention
-        tmp = self.layer_normalz["crx"][0](agg)
-        out = self.crx_layer(tmp, memory, memory, memory_mask, memory_key_padding_mask)
-        out = self.dropout_layer["crx"](out)
-        agg = tmp + out  # residual
-        agg = self.layer_normalz["crx"][1](agg)
+        self.mha_layer = nn.MultiheadAttention(
+            batch_first=True,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            dropout=attention_dropout_probs,
+            bias=qkv_bias,
+        )
 
-        # feed forward network
-        tmp = self.layer_normalz["ffn"][0](agg)
-        out = self.ffn_layer(agg)
-        out = self.dropout_layer["ffn"](out)
-        agg = tmp + out  # residual
-        agg = self.layer_normalz["ffn"][1](agg)
+        self.layer_norm_1 = nn.LayerNorm(embed_dim)
+        self.mlp_layer = MLP(embed_dim, mlp_intermed_size, mlp_dropout_prob)
+        self.layer_norm_2 = nn.LayerNorm(embed_dim)
 
-        return agg
+    def forward(self, x, output_attentions=False):
+        attention_outtput, attention_weight = self.mha_layer(x, x, x)
+        x = self.layer_norm_1(x + attention_outtput)  # skip connection
+        mlp_output = self.mlp_layer(x)
+        x = self.layer_norm_2(x + mlp_output)  # skip connection
+
+        if output_attentions:
+            return (x, attention_weight)
+        else:
+            return x, None
 
 
 class TransformerEncoder(nn.Module):
-    def __init__(self, nb_layers, in_dim, ff_dim, nb_heads, drop_val=0.1, pre_norm=False):
-        super(TransformerEncoder, self).__init__()
-        self.encoders = nn.ModuleList([])
-        for _ in range(nb_layers):
-            blk = EncoderBlock(in_dim=in_dim, ff_dim=ff_dim, nb_heads=nb_heads, drop_val=drop_val, pre_norm=pre_norm)
-            self.encoders.append(blk)
+    def __init__(self, num_layers: int = 6, **transformer_kwargs):
+        super().__init__()
 
-    def forward(self, src, mask=None, key_padding_mask=None):
-        fnl = ft.reduce(lambda acc, crr: acc + [crr(acc[-1], mask, key_padding_mask)], self.encoders, [src])
-        return fnl[1:]  # ignore src
+        self.num_layers = num_layers
+        self.blocks = nn.ModuleList([TransformerEncoderBlock(**transformer_kwargs) for _ in range(num_layers)])
 
+    def forward(self, x, output_attentions=False):
+        all_attentions = []  # per layer attention
+        for layer in self.blocks:
+            x, attention_probs = layer(x, output_attentions)
+            if output_attentions:
+                all_attentions.append(attention_probs)
 
-class TransformerDecoder(nn.Module):
-    def __init__(self, nb_layers, in_dim, ff_dim, nb_heads, drop_val=0.1, pre_norm=False):
-        super(TransformerDecoder, self).__init__()
-        self.decoders = nn.ModuleList([])
-        for _ in range(nb_layers):
-            blk = DecoderBlock(in_dim=in_dim, ff_dim=ff_dim, nb_heads=nb_heads, drop_val=drop_val, pre_norm=pre_norm)
-            self.decoders.append(blk)
-
-    def forward(
-        self, tgt, memory, tgt_mask=None, memory_mask=None, tgt_key_padding_mask=None, memory_key_padding_mask=None
-    ):
-        lng = len(memory) - 1
-        fnl = ft.reduce(
-            lambda acc, crr: acc
-            + [crr[1](acc[-1], memory[-1], tgt_mask, memory_mask, tgt_key_padding_mask, memory_key_padding_mask)],
-            enumerate(self.decoders),
-            [tgt],
-        )
-        return fnl[1:]  # ignore tgt
-
-
-class Transformer(nn.Module):
-    def __init__(self, in_dim, ff_dim, nb_heads, encoder_depth, decoder_depth, drop_val=0.1, pre_norm=False):
-        super(Transformer, self).__init__()
-        self.encoder = TransformerEncoder(
-            nb_layers=encoder_depth,
-            in_dim=in_dim,
-            ff_dim=ff_dim,
-            nb_heads=nb_heads,
-            drop_val=drop_val,
-            pre_norm=pre_norm,
-        )
-        self.decoder = TransformerDecoder(
-            nb_layers=decoder_depth,
-            in_dim=in_dim,
-            ff_dim=ff_dim,
-            nb_heads=nb_heads,
-            drop_val=drop_val,
-            pre_norm=pre_norm,
-        )
-
-    def forward(
-        self,
-        src,
-        tgt,
-        src_mask=None,
-        tgt_mask=None,
-        memory_mask=None,
-        src_key_padding_mask=None,
-        tgt_key_padding_mask=None,
-        memory_key_padding_mask=None,
-    ):
-        memory = self.encoder(src, src_mask, src_key_padding_mask)
-        output = self.decoder(tgt, memory, tgt_mask, memory_mask, tgt_key_padding_mask, memory_key_padding_mask)
-        return output
+        if output_attentions:
+            return (x, all_attentions)
+        return x, None

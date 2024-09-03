@@ -1,74 +1,124 @@
-import numpy as np
+import torch
 import torch.nn as nn
-from cathseg.transformer_7.modules import PositionalEncoding, Transformer
+import torch.nn.functional as F
+from cathseg.transformer_7.modules import PatchEmbeddings, SinusoidalEncoding, TransformerEncoder
 
 
-class CaptionTransformer(nn.Module):
+class SplineTransformer(nn.Module):
     def __init__(
-        self, in_dim, hd_dim, ff_dim, nb_heads, num_encoders, num_decoders, pre_norm, seq_length, nb_tokens, padding_idx
+        self,
+        image_size: int = 224,
+        num_channels: int = 3,
+        patch_size: int = 32,
+        embed_dim: int = 256,
+        num_layers_encoder: int = 6,
+        num_layers_decoder: int = 6,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        attention_dropout_probs: float = 0.0,
+        hidden_dropout_prob: float = 0.1,
+        transformer_decoder_dropout_prob: float = 0.1,
+        mlp_dropout_prob: float = 0.1,
+        dim_pts: int = 2,
+        tgt_max_len: int = 20,
     ):
-        super(CaptionTransformer, self).__init__()
-        self.embedding_scale = np.sqrt(hd_dim)
-        self.position_encoder = PositionalEncoding(seq_length, hd_dim)
-        self.adaptaror = nn.Linear(in_dim, hd_dim)
-        self.token_embedder = nn.Embedding(nb_tokens, hd_dim, padding_idx)
-        self.transformer = Transformer(
-            in_dim=hd_dim,
-            ff_dim=ff_dim,
-            nb_heads=nb_heads,
-            encoder_depth=num_encoders,
-            decoder_depth=num_decoders,
-            pre_norm=pre_norm,
-        )
-        self.generator = nn.Linear(hd_dim, nb_tokens)
+        super().__init__()
 
-    def encode(self, src, src_mask=None, src_key_padding_mask=None):
-        src = self.adaptaror(src)  # reduce the dimension for in_dim to hd_dim
-        src = self.position_encoder(src)
-        memory = self.transformer.encoder(src, src_mask, src_key_padding_mask)
-        return memory
+        self.patch_embedding = PatchEmbeddings(
+            img_size=image_size, num_channels=num_channels, patch_size=patch_size, embed_dim=embed_dim
+        )
+        self.seq_len = self.patch_embedding.num_patches
+        self.positional_encoding = SinusoidalEncoding(d_model=embed_dim, max_len=self.seq_len)
+
+        self.transformer_encoder = TransformerEncoder(
+            num_layers=num_layers_encoder,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            mlp_intermed_size=embed_dim * 4,
+            qkv_bias=qkv_bias,
+            attention_dropout_probs=attention_dropout_probs,
+            mlp_dropout_prob=mlp_dropout_prob,
+        )
+
+        self.target_embedding = nn.Linear(dim_pts + 1, embed_dim)
+        self.target_sinuisodal_encoding = SinusoidalEncoding(d_model=embed_dim, max_len=tgt_max_len)
+        transformer_decoder_layer = nn.TransformerDecoderLayer(
+            batch_first=True,
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * 4,
+            dropout=transformer_decoder_dropout_prob,
+        )
+        self.transformer_decoder = nn.TransformerDecoder(transformer_decoder_layer, num_layers_decoder)
+
+        self.fc_seq = nn.Sequential(nn.Linear(embed_dim, 1 + dim_pts))  # Predicting n_dim control and 1D knots
+        self.fc_eos = nn.Sequential(nn.Linear(embed_dim, 1), nn.Sigmoid())  # Predicting end-of-sequence token
+
+    def encode(self, src: torch.Tensor, output_attentions=False) -> torch.Tensor:
+        src = self.patch_embedding(src)
+        src = self.positional_encoding(src)
+        memory, attention_weight = self.transformer_encoder(src, output_attentions=output_attentions)
+        return memory, attention_weight
 
     def decode(
-        self, tgt, memory, tgt_mask=None, memory_mask=None, tgt_key_padding_mask=None, memory_key_padding_mask=None
-    ):
-        tgt = self.token_embedder(tgt) * self.embedding_scale
-        tgt = self.position_encoder(tgt)
-        output = self.transformer.decoder(
-            tgt, memory, tgt_mask, memory_mask, tgt_key_padding_mask, memory_key_padding_mask
+        self,
+        memory: torch.Tensor,
+        tgt: torch.Tensor,
+        tgt_mask: torch.Tensor = None,
+        tgt_key_padding_mask: torch.Tensor = None,
+    ) -> torch.Tensor:
+        tgt = self.target_embedding(tgt)
+        tgt = self.target_sinuisodal_encoding(tgt)
+
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.size(1)).to(device=tgt.device)
+
+        output = self.transformer_decoder(
+            tgt=tgt, memory=memory, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask
         )
+
         return output
 
     def forward(
         self,
-        src,
-        tgt,
-        src_mask=None,
-        tgt_mask=None,
-        memory_mask=None,
-        src_key_padding_mask=None,
-        tgt_key_padding_mask=None,
-        memory_key_padding_mask=None,
+        src: torch.Tensor,
+        tgt: torch.Tensor,
+        tgt_mask: torch.Tensor = None,
+        tgt_key_padding_mask: torch.Tensor = None,
+        output_attentions=False,
     ):
-        src = self.position_encoder(self.adaptaror(src))
-        embedded_tgt = self.token_embedder(tgt)
-        embedded_tgt = self.position_encoder(embedded_tgt)
-
-        output = self.transformer(
-            src=src,
-            tgt=embedded_tgt,
-            src_mask=src_mask,
-            tgt_mask=tgt_mask,
-            memory_mask=memory_mask,
-            src_key_padding_mask=src_key_padding_mask,
-            tgt_key_padding_mask=tgt_key_padding_mask,
-            memory_key_padding_mask=memory_key_padding_mask,
-        )
-
-        return self.generator(output[-1])
+        memory, attention_weights = self.encode(src=src, output_attentions=output_attentions)
+        output = self.decode(memory=memory, tgt=tgt, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_key_padding_mask)
+        seq = self.fc_seq(output)
+        eos = self.fc_eos(output)
+        return seq, eos, memory, attention_weights
 
 
 def main():
-    pass
+    num_channels = 1
+    patch_size = 32
+    image_size = 1024
+    seq_len = 8
+    max_seq_len = 20
+
+    X = torch.rand(1, num_channels, image_size, image_size)
+    tgt = torch.rand(1, 8, 3)
+    tgt = F.pad(tgt, (0, 0, 0, max_seq_len - seq_len))
+    tgt_key_padding_mask = torch.ones(max_seq_len, dtype=torch.int32)
+    tgt_key_padding_mask[seq_len:] = 0
+    tgt_key_padding_mask = tgt_key_padding_mask.unsqueeze(0)
+
+    model = SplineTransformer(
+        image_size=image_size,
+        num_channels=num_channels,
+        patch_size=patch_size,
+        embed_dim=256,
+        num_layers_encoder=6,
+        num_heads=8,
+    )
+
+    seq, eos, memory, attentions = model(src=X, tgt=tgt, tgt_key_padding_mask=tgt_key_padding_mask)
+    print("Sequence: ", seq.shape)
+    print("End-of-sequence: ", eos.shape)
 
 
 if __name__ == "__main__":
