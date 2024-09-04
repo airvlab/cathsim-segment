@@ -17,6 +17,7 @@ class Guide3DModule(pl.LightningDataModule):
         image_size=1024,
         c_transform: callable = None,
         t_transform: callable = None,
+        download=False,
     ):
         super().__init__()
         self.dataset_path = dataset_path
@@ -24,6 +25,7 @@ class Guide3DModule(pl.LightningDataModule):
         self.batch_size = batch_size
         self.n_channels = n_channels
         self.image_size = image_size
+        self.download = download
 
         self.c_transform = c_transform
         self.t_transform = t_transform
@@ -38,7 +40,7 @@ class Guide3DModule(pl.LightningDataModule):
         vit_transform = transforms.Compose(
             [
                 transforms.ToPILImage(),  # Convert image to PIL image
-                # transforms.Resize((IMAGE_SIZE, IMAGE_SIZE)),  # Resize image to 224x224
+                transforms.Resize((self.image_size, self.image_size)),
                 transforms.ToTensor(),
                 transforms.Lambda(lambda x: x.repeat(self.n_channels, 1, 1)),
                 transforms.Normalize(  # Normalize with mean and std
@@ -53,7 +55,7 @@ class Guide3DModule(pl.LightningDataModule):
                 dataset_path=self.dataset_path,
                 annotations_file="sphere_wo_reconstruct.json",
                 split="train",
-                download=True,
+                download=self.download,
                 image_transform=vit_transform,
                 c_transform=c_transform,
                 t_transform=t_transform,
@@ -66,9 +68,10 @@ class Guide3DModule(pl.LightningDataModule):
                 image_transform=vit_transform,
                 c_transform=c_transform,
                 t_transform=t_transform,
+                download=self.download,
             )
 
-        if stage == "test":
+        if stage == "test" or stage == "predict":
             self.test_ds = Guide3D(
                 dataset_path=self.dataset_path,
                 annotations_file="sphere_wo_reconstruct.json",
@@ -76,16 +79,7 @@ class Guide3DModule(pl.LightningDataModule):
                 image_transform=vit_transform,
                 c_transform=c_transform,
                 t_transform=t_transform,
-            )
-
-        if stage == "predict":
-            self.test_ds = Guide3D(
-                dataset_path=self.dataset_path,
-                annotations_file="sphere_wo_reconstruct.json",
-                split="test",
-                image_transform=vit_transform,
-                c_transform=c_transform,
-                t_transform=t_transform,
+                download=self.download,
             )
 
     def train_dataloader(self):
@@ -105,6 +99,14 @@ class Guide3DModule(pl.LightningDataModule):
         )
 
     def test_dataloader(self):
+        return data.DataLoader(
+            self.test_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def predict_dataloader(self):
         return data.DataLoader(
             self.test_ds,
             batch_size=self.batch_size,
