@@ -83,10 +83,10 @@ class SplineFormer(pl.LightningModule):
         self.criterion_seq = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
-        self.lambda_seq = 1.0
+        self.lambda_seq = 100.0
         self.lambda_eos = 1.0
 
-        self.init_token = torch.zeros(1, 1 + self.n_dim)  # (seq_len, dim)
+        self.init_token = torch.zeros(1, 1 + self.n_dim)
 
         self.val_step_outputs = []
 

@@ -28,7 +28,7 @@ class SinusoidalEncoding(nn.Module):
 
 
 class PatchEmbeddings(nn.Module):
-    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, dim: int = 768):
+    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, dim: int = 512):
         super().__init__()
         self.img_size = img_size
         self.num_channels = num_channels
@@ -48,21 +48,21 @@ class PatchEmbeddings(nn.Module):
             nn.LayerNorm(dim),
         )
 
-    def forward(self, x: torch.Tensor):
+    def forward(self, x: torch.Tensor) -> Tensor:
         x = self.to_patch_embedding(x)
         return x
 
 
 class FeedForward(nn.Module):
-    def __init__(self, embed_dim: int = 256, hidden_size: int = 256 * 4):
+    def __init__(self, d_model: int = 256, hidden_dim: int = 256 * 4):
         super().__init__()
         self.ff = nn.Sequential(
-            nn.Linear(embed_dim, hidden_size),
+            nn.Linear(d_model, hidden_dim),
             nn.GELU(),
-            nn.Linear(hidden_size, embed_dim),
+            nn.Linear(hidden_dim, d_model),
         )
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tensor:
         return self.ff(x)
 
 
@@ -70,18 +70,13 @@ class TransformerEncoderLayer(nn.Module):
     def __init__(self, d_model: int = 256, num_heads: int = 8, ff_dim: int = 256 * 4, dropout: float = 0.00):
         super().__init__()
 
-        self.mha = nn.MultiheadAttention(
-            batch_first=True,
-            embed_dim=d_model,
-            num_heads=num_heads,
-            dropout=dropout,
-        )
+        self.mha = nn.MultiheadAttention(batch_first=True, embed_dim=d_model, num_heads=num_heads, dropout=dropout)
         self.ff = FeedForward(d_model, ff_dim)
 
         self.mha_norm = nn.LayerNorm(d_model)
         self.ff_norm = nn.LayerNorm(d_model)
 
-    def forward(self, x):
+    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
         attention_outtput, attentions = self.mha(x, x, x, average_attn_weights=False)
         x = self.mha_norm(x + attention_outtput)
         mlp_output = self.ff(x)
@@ -95,13 +90,14 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
 
-    def forward(self, src, output_attentions=False):
+    def forward(self, src: Tensor, output_attentions=False) -> Tuple[Tensor, Tensor]:
         all_attentions = []
         for layer in self.layers:
             x, attentions = layer(src)
-            all_attentions.append(attentions)
-        all_attentions = torch.stack(all_attentions, dim=1)
+            if output_attentions:
+                all_attentions.append(attentions)
         if output_attentions:
+            all_attentions = torch.stack(all_attentions, dim=1)
             return x, all_attentions
         return x, None
 
@@ -121,7 +117,9 @@ class TransformerDecoderLayer(nn.Module):
         self.ff_norm = nn.LayerNorm(d_model)
         self.ff_dropout = nn.Dropout(dropout)
 
-    def forward(self, enc_outputs: Tensor, dec_inputs: Tensor, tgt_mask: Tensor, tgt_pad_mask: Tensor):
+    def forward(
+        self, enc_outputs: Tensor, dec_inputs: Tensor, tgt_mask: Tensor, tgt_pad_mask: Tensor
+    ) -> Tuple[Tensor, Tensor]:
         """
         returns output (batch_size, seq_len, d_model), attentions (batch_size, n_heads, seq_len, patch_size^2)
         """
@@ -153,8 +151,10 @@ class TransformerDecoder(nn.Module):
         all_attentions = []
         for layer in self.layers:
             tgt, attentions = layer(memory, tgt, tgt_mask, tgt_pad_mask)
+            if output_attentions:
+                all_attentions.append(attentions)
             all_attentions.append(attentions)
-        all_attentions = torch.stack(all_attentions, dim=1)
         if output_attentions:
+            all_attentions = torch.stack(all_attentions, dim=1)
             return tgt, all_attentions
         return tgt, None

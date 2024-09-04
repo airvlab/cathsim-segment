@@ -69,13 +69,17 @@ def process_attention_maps(
     return attention_map  # (batch_size, num_points, img_size, img_size)
 
 
-def plot_attention_maps(gen, processed_attentions):
+def plot_attention_maps(gen, processed_attentions, img=None):
     num_points = len(gen)
     grid_cols = 5
     grid_rows = (num_points + grid_cols - 1) // grid_cols
     fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(15, grid_rows * 3))
     axes = axes.flatten()
     for point_index in range(num_points):
+        if img:
+            axes[point_index].imshow(img)
+            axes[point_index].imshow(processed_attentions[point_index], alpha=0.5)
+            continue
         axes[point_index].imshow(processed_attentions[point_index])
 
     for idx in range(len(axes)):

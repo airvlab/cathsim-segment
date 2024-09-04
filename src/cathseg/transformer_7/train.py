@@ -10,7 +10,6 @@ from cathseg.transformer_7.pl_module import SplineFormer as Model
 from pytorch_lightning import Callback
 from pytorch_lightning.callbacks import ModelCheckpoint
 from scipy.interpolate import splev
-from tqdm import tqdm
 
 import wandb
 
@@ -21,10 +20,12 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-IMAGE_SIZE = 1024
+IMAGE_SIZE = 256
 N_CHANNELS = 1
-MODEL_VERSION = "w_attention_viz"
-PROJECT = "transformer"
+MODEL_VERSION = "w_attention_viz_3"
+PROJECT = "transformer_3"
+
+scaling_factor = IMAGE_SIZE / 1024
 
 
 def c_untransform(c):
@@ -32,12 +33,20 @@ def c_untransform(c):
 
 
 def t_untransform(t):
-    return t * Guide3D.t_max
+    return t * IMAGE_SIZE
 
 
 def img_untransform(img):
     img = img * 0.5 + 0.5
     return img
+
+
+def c_transform(c):
+    return c / 1024
+
+
+def t_transform(t):
+    return t / 1024
 
 
 def plot_images(img_true, img_pred, img_gen):
@@ -137,7 +146,7 @@ class ImageCallbackLogger(Callback):
             instances[i]["c_gen"] = generated["c"]
             instances[i]["t_gen"] = generated["t"]
 
-        for instance in tqdm(instances):
+        for instance in instances:
             img_true, img_pred, img_gen = self.make_images(instance)
 
             table.add_data(
@@ -158,11 +167,13 @@ def train():
         batch_size=16,
         n_channels=N_CHANNELS,
         image_size=IMAGE_SIZE,
+        c_transform=c_transform,
+        t_transform=t_transform,
     )
     model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
 
     trainer = pl.Trainer(
-        max_epochs=200,
+        max_epochs=300,
         logger=wandb_logger,
         callbacks=[
             ImageCallbackLogger(),
@@ -171,6 +182,7 @@ def train():
         ],
     )
     trainer.fit(model, datamodule=dm)
+    trainer.test(model, datamodule=dm)
 
 
 def dummy_run_2():
@@ -180,6 +192,8 @@ def dummy_run_2():
         batch_size=8,
         n_channels=N_CHANNELS,
         image_size=IMAGE_SIZE,
+        c_transform=c_transform,
+        t_transform=t_transform,
     )
     model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
 
@@ -195,11 +209,20 @@ def test():
         batch_size=1,
         n_channels=N_CHANNELS,
         image_size=IMAGE_SIZE,
+        c_transform=c_transform,
+        t_transform=t_transform,
     )
     model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
-    trainer = pl.Trainer(max_epochs=200, fast_dev_run=True, callbacks=[ImageCallbackLogger()])
+    trainer = pl.Trainer(
+        max_epochs=200,
+        fast_dev_run=True,
+        callbacks=[
+            ImageCallbackLogger(),
+            ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="val/loss", mode="min"),
+        ],
+    )
 
-    trainer.test(model, datamodule=dm, ckpt_path="models/transformer-w_attention_viz/epoch=181-step=74620.ckpt")
+    trainer.test(model, datamodule=dm, ckpt_path="best_model_path")
 
 
 def predict():
@@ -211,15 +234,24 @@ def predict():
         batch_size=1,
         n_channels=N_CHANNELS,
         image_size=IMAGE_SIZE,
+        c_transform=c_transform,
+        t_transform=t_transform,
     )
 
     model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
-    trainer = pl.Trainer(max_epochs=200, fast_dev_run=True, callbacks=[ImageCallbackLogger()])
+    trainer = pl.Trainer(
+        max_epochs=200,
+        fast_dev_run=True,
+        callbacks=[
+            ImageCallbackLogger(),
+            ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="val/loss", mode="min"),
+        ],
+    )
 
     pred = trainer.predict(
         model,
         datamodule=dm,
-        ckpt_path="models/transformer-w_attention_viz/epoch=181-step=74620.ckpt",
+        # ckpt_path="models/transformer-w_attention_viz/epoch=181-step=74620.ckpt",
         return_predictions=True,
     )
 
@@ -234,5 +266,5 @@ def predict():
 if __name__ == "__main__":
     dummy_run_2()
     # train()
-    test()
+    # test()
     predict()
