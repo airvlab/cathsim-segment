@@ -127,13 +127,12 @@ class ImageCallbackLogger(Callback):
         return [img_true, img_pred, img_gen]
 
     def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
-        instances = pl_module.training_step_output
-        samples = min(len(instances), 10)
-        instances = instances[:samples]
+        instances = pl_module.val_step_outputs
+        instances = instances[: min(len(instances), 10)]
 
         table = wandb.Table(columns=["GT", "Preds", "Inference"])
-
         for i, instance in enumerate(instances):
+            pl_module.eval()
             generated = pl_module.inference_step(instance["img"])
             instances[i]["c_gen"] = generated["c"]
             instances[i]["t_gen"] = generated["t"]
@@ -144,9 +143,10 @@ class ImageCallbackLogger(Callback):
             table.add_data(
                 wandb.Image(img_true[:, :, 0]), wandb.Image(img_pred[:, :, 0]), wandb.Image(img_gen[:, :, 0])
             )
-
         trainer.logger.experiment.log({"img_samples": table})
-        pl_module.inference_step_output = []
+
+        pl_module.train()
+        pl_module.val_step_outputs = []
 
 
 def train():
@@ -159,12 +159,7 @@ def train():
         n_channels=N_CHANNELS,
         image_size=IMAGE_SIZE,
     )
-    model = Model(
-        tgt_max_len=Guide3D.max_seq_len,
-        img_size=IMAGE_SIZE,
-        num_channels=N_CHANNELS,
-        d_model=512,
-    )
+    model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
 
     trainer = pl.Trainer(
         max_epochs=200,
@@ -186,18 +181,58 @@ def dummy_run_2():
         n_channels=N_CHANNELS,
         image_size=IMAGE_SIZE,
     )
-    model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS)
+    model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
 
-    trainer = pl.Trainer(
-        max_epochs=200,
-        fast_dev_run=True,
-        callbacks=[ImageCallbackLogger()],
-    )
+    trainer = pl.Trainer(max_epochs=200, fast_dev_run=True, callbacks=[ImageCallbackLogger()])
 
     trainer.fit(model, datamodule=dm)
 
 
+def test():
+    dm = Guide3DModule(
+        dataset_path=Path.home() / "data/segment-real/",
+        annotations_file="sphere_wo_reconstruct.json",
+        batch_size=1,
+        n_channels=N_CHANNELS,
+        image_size=IMAGE_SIZE,
+    )
+    model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
+    trainer = pl.Trainer(max_epochs=200, fast_dev_run=True, callbacks=[ImageCallbackLogger()])
+
+    trainer.test(model, datamodule=dm, ckpt_path="models/transformer-w_attention_viz/epoch=181-step=74620.ckpt")
+
+
+def predict():
+    import cathseg.transformer_7.utils as utils
+
+    dm = Guide3DModule(
+        dataset_path=Path.home() / "data/segment-real/",
+        annotations_file="sphere_wo_reconstruct.json",
+        batch_size=1,
+        n_channels=N_CHANNELS,
+        image_size=IMAGE_SIZE,
+    )
+
+    model = Model(tgt_max_len=Guide3D.max_seq_len, img_size=IMAGE_SIZE, num_channels=N_CHANNELS, d_model=512)
+    trainer = pl.Trainer(max_epochs=200, fast_dev_run=True, callbacks=[ImageCallbackLogger()])
+
+    pred = trainer.predict(
+        model,
+        datamodule=dm,
+        ckpt_path="models/transformer-w_attention_viz/epoch=181-step=74620.ckpt",
+        return_predictions=True,
+    )
+
+    model.eval()
+
+    generated_seq, generated_eos, memory, encoder_atts, decoder_atts = pred[0]
+    eos = generated_eos.argmax(-1)
+    encoder_atts = utils.process_attention_maps(decoder_atts, img_size=IMAGE_SIZE, channels=N_CHANNELS, layer=None)
+    utils.plot_attention_maps(generated_seq[0][:eos], encoder_atts[0][:eos])
+
+
 if __name__ == "__main__":
-    # dummy_run_2()
-    train()
-    # test()
+    dummy_run_2()
+    # train()
+    test()
+    predict()

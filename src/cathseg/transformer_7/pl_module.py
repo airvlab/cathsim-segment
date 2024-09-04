@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -89,13 +88,23 @@ class SplineFormer(pl.LightningModule):
 
         self.init_token = torch.zeros(1, 1 + self.n_dim)  # (seq_len, dim)
 
-        self.training_step_output = []
+        self.val_step_outputs = []
 
     def forward(self, img, tgt, tgt_mask, tgt_pad_mask):
         seq_pred, eos_pred, memory, encoder_atts, decoder_atts = self.model(
             src=img, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask
         )
         return seq_pred, eos_pred.squeeze(-1), memory, encoder_atts, decoder_atts
+
+    def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask):
+        loss_seq = self.criterion_seq(pred_seq, tgt_output)
+        loss_eos = self.criterion_eos(eos_pred, eos_labels)
+
+        loss_seq = (loss_seq * tgt_pad_mask.unsqueeze(-1)).sum()
+        loss_eos = (loss_eos).sum()
+
+        loss = self.lambda_seq * loss_seq + self.lambda_eos * loss_eos
+        return loss_seq, loss_eos, loss
 
     def _step(self, batch, batch_idx, val=False):
         imgs, tgt, tgt_pad_mask = batch
@@ -117,22 +126,13 @@ class SplineFormer(pl.LightningModule):
         # Forward pass
         pred_seq, eos_pred, _, _, _ = self(imgs, tgt_input, tgt_mask, tgt_pad_mask)
 
-        # Compute losses
-        loss_seq = self.criterion_seq(pred_seq, tgt_output)
-        loss_eos = self.criterion_eos(eos_pred, eos_labels)
-
-        # Apply the mask to the losses
-        loss_seq = loss_seq * tgt_pad_mask.unsqueeze(-1)
-        loss_eos = loss_eos * tgt_pad_mask
-
-        # Compute the total loss as a weighted sum
-        loss = self.lambda_seq * loss_seq.sum() + self.lambda_eos * loss_eos.sum()
+        loss_seq, loss_eos, loss = self._compute_loss(pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask)
 
         seq_lens = tgt_pad_mask.sum(dim=1)
 
         if val:
-            if len(self.training_step_output) < 10:
-                self.training_step_output.append(
+            if len(self.val_step_outputs) < 10:
+                self.val_step_outputs.append(
                     dict(
                         img=imgs[0],
                         t_true=tgt_output[0, :, 0:1],
@@ -143,11 +143,11 @@ class SplineFormer(pl.LightningModule):
                     )
                 )
 
-        return loss_seq.sum(), loss_eos.sum(), loss
+        return loss_seq, loss_eos, loss
 
     def _log(self, loss_seq, loss_eos, loss, tag):
-        self.log(f"{tag}/loss_seq", loss_seq.sum())
-        self.log(f"{tag}/loss_eos", loss_eos.sum())
+        self.log(f"{tag}/loss_seq", loss_seq)
+        self.log(f"{tag}/loss_eos", loss_eos)
         self.log(f"{tag}/loss", loss)
 
     def training_step(self, batch, batch_idx):
@@ -160,37 +160,53 @@ class SplineFormer(pl.LightningModule):
         self._log(loss_seq, loss_eos, loss, "val")
         return loss
 
+    def test_step(self, batch, batch_idx):
+        imgs, tgt, tgt_pad_mask = batch
+
+        # Create EOS labels: 1 for the last valid token, 0 otherwise
+        eos_labels = torch.zeros_like(tgt_pad_mask)
+        eos_labels[torch.arange(tgt_pad_mask.size(0)), (tgt_pad_mask.sum(dim=1) - 1).long()] = 1
+        eos_labels = eos_labels.float()
+
+        # Forward pass
+        pred_seq, eos_pred, memory, encoder_atts, decoder_atts = self.generate_sequence(imgs)
+
+        loss_seq, loss_eos, loss = self._compute_loss(pred_seq, eos_pred, tgt, eos_labels, tgt_pad_mask)
+
+        self._log(loss_seq, loss_eos, loss, "test")
+
+        return loss
+
     def inference_step(self, X):
-        self.eval()
-
-        with torch.no_grad():
-            # Add batch dimension to the input tensor
-            X = X.unsqueeze(0)  # (1, input_dim)
-
-            # Initialize the generated sequence with start token (all zeros)
-            generated_seq = torch.zeros(1, 1, 3).to(X.device)  # (1, 1, 3)
-
-            for i in range(self.tgt_max_len):
-                seq_pred, eos_pred, memory, encoder_atts, decoder_atts = self.model(src=X, tgt=generated_seq)
-
-                # Take the last prediction for each component
-                last_pt_pred = seq_pred[:, -1:, :]
-                last_eos_pred = eos_pred[:, -1:, :]  # (1, 1)
-
-                generated_seq = torch.cat([generated_seq, last_pt_pred], dim=1)  # (1, seq_len+1, 3)
-
-                # Early stopping condition based on eos prediction
-                if last_eos_pred.item() > 0.5 and i > 2:
-                    break
-
-            # Remove the initial start token and prepare the output
-            generated_seq = generated_seq[:, 1:, :].squeeze(0)  # (seq_len, 3)
-            t_pred = generated_seq[:, 0]  # (seq_len)
-            c_pred = generated_seq[:, 1:3]  # (seq_len, 2)
-
-        self.train()
+        X = X.unsqueeze(0)  # (1, input_dim)
+        generated_seq, generated_eos, memory, encoder_atts, decoder_atts = self.generate_sequence(X)
+        eos = generated_eos.argmax(-1)
+        generated_seq = generated_seq[0, :eos]
+        t_pred = generated_seq[:, 0]  # (seq_len)
+        c_pred = generated_seq[:, 1:3]  # (seq_len, 2)
 
         return dict(t=t_pred, c=c_pred)
+
+    def generate_sequence(self, X, output_attentions=False):
+        batch_size, _, _, _ = X.shape
+        with torch.no_grad():
+            generated_seq = torch.zeros(batch_size, 1, 3, device=X.device)
+            generated_eos = torch.zeros(batch_size, self.tgt_max_len, device=X.device)
+
+            for i in range(self.tgt_max_len):
+                seq_pred, eos_pred, memory, encoder_atts, decoder_atts = self.model(
+                    src=X, tgt=generated_seq, output_attentions=output_attentions
+                )
+                generated_seq = torch.cat([generated_seq, seq_pred[:, -1:, :]], dim=1)
+                generated_eos[:, i] = eos_pred[:, -1]
+
+            generated_seq = generated_seq[:, 1:, :]  # Remove the initial start token
+
+        return generated_seq, generated_eos, memory, encoder_atts, decoder_atts
+
+    def predict_step(self, batch, batch_idx):
+        X, _, _ = batch
+        return self.generate_sequence(X, output_attentions=True)
 
     def configure_optimizers(self):
         optimizer = optim.NAdam(self.parameters(), lr=1e-5)
@@ -205,44 +221,14 @@ def unnormalize_img(img):
     return img
 
 
-def plot_instance(instance, dataset):
-    import numpy as np
-    from scipy.interpolate import splev
-
-    img, target_seq, target_mask = instance
-    img, target_seq, target_mask = (
-        img.cpu().detach().numpy(),
-        target_seq.cpu().detach().numpy(),
-        target_mask.cpu().detach().numpy(),
-    )
-
-    seq_len = target_mask.sum().astype(int)
-    target_seq = target_seq[:seq_len]
-
-    t = target_seq[:, 0]
-    t = np.concatenate([np.zeros((4,)), t])
-    t = t_untransform(t, None, None)
-    c = target_seq[:, 1:].T
-    c = c_untransform(c, dataset.c_min, dataset.c_max)
-
-    sample_idx = np.linspace(0, t[-1], 40)
-    samples = splev(sample_idx, (t, c, 3))
-
-    img = img.squeeze(0)
-    # img = np.ones(img.shape).transpose(1, 2, 0)
-    plt.imshow(img, cmap="gray")
-    plt.scatter(c[0], c[1], c="r")
-    plt.plot(samples[0], samples[1], c="b")
-    plt.axis("off")
-    plt.show()
-
-
 def main():
+    from pathlib import Path
+
     from guide3d.dataset.image.spline import Guide3D
 
     # dataset = DummyData(NUM_SAMPLES, X_SHAPE, MAX_LEN)
     dataset = Guide3D(
-        dataset_path="/tmp/guide3d/guide3d/",
+        dataset_path=Path.home() / "data/segment-real/",
         download=True,
         image_transform=vit_transform,
         c_transform=c_transform,
@@ -251,7 +237,11 @@ def main():
 
     dataloader = data.DataLoader(dataset, batch_size=8, shuffle=False)
 
-    model = SplineFormer(tgt_max_len=dataset.max_length, num_channels=N_CHANNELS, img_size=IMAGE_SIZE)
+    model = SplineFormer(
+        tgt_max_len=dataset.max_length,
+        num_channels=N_CHANNELS,
+        img_size=IMAGE_SIZE,
+    )
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
     # Training loop
@@ -262,7 +252,8 @@ def main():
             img, target_seq, target_mask = batch
             # plot_instance(tuple(x[0] for x in batch), dataset)
 
-            # model.inference_step(img[0])
+            model.generate_sequence(img)
+            exit()
             # exit()
 
             loss = model.training_step(batch, i)

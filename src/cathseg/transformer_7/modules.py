@@ -18,17 +18,11 @@ class SinusoidalEncoding(nn.Module):
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(1e4) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-
-        # Unsqueeze and transpose to make it [1, max_len, d_model]
-        pe = pe.unsqueeze(0)
-
-        # Register as a buffer so it's not considered as a parameter
-        self.register_buffer("pe", pe)
+        pe = pe.unsqueeze(0)  # [1, max_len, d_model]
+        self.register_buffer("pe", pe)  # ignore parameter
 
     def forward(self, x):
-        # x is assumed to have shape [batch_size, seq_len, d_model]
-        seq_len = x.size(1)
-        # Add positional encoding to the input tensor
+        seq_len = x.size(1)  # [batch_size, seq_len, d_model]
         x = x + self.pe[:, :seq_len, :]
         return self.dropout(x)
 
@@ -88,7 +82,7 @@ class TransformerEncoderLayer(nn.Module):
         self.ff_norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        attention_outtput, attentions = self.mha(x, x, x)
+        attention_outtput, attentions = self.mha(x, x, x, average_attn_weights=False)
         x = self.mha_norm(x + attention_outtput)
         mlp_output = self.ff(x)
         x = self.ff_norm(x + mlp_output)
@@ -101,13 +95,15 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
 
-    def forward(self, src):
+    def forward(self, src, output_attentions=False):
         all_attentions = []
         for layer in self.layers:
             x, attentions = layer(src)
             all_attentions.append(attentions)
         all_attentions = torch.stack(all_attentions, dim=1)
-        return x, all_attentions
+        if output_attentions:
+            return x, all_attentions
+        return x, None
 
 
 class TransformerDecoderLayer(nn.Module):
@@ -126,11 +122,14 @@ class TransformerDecoderLayer(nn.Module):
         self.ff_dropout = nn.Dropout(dropout)
 
     def forward(self, enc_outputs: Tensor, dec_inputs: Tensor, tgt_mask: Tensor, tgt_pad_mask: Tensor):
+        """
+        returns output (batch_size, seq_len, d_model), attentions (batch_size, n_heads, seq_len, patch_size^2)
+        """
         output, _ = self.sa(dec_inputs, dec_inputs, dec_inputs, attn_mask=tgt_mask, key_padding_mask=tgt_pad_mask)
         output = dec_inputs + self.sa_dropout(output)
         output = self.sa_norm(output)
 
-        output2, attentions = self.mha(output, enc_outputs, enc_outputs)
+        output2, attentions = self.mha(output, enc_outputs, enc_outputs, average_attn_weights=False)
         output = output + self.mha_dropout(output2)
         output = self.mha_norm(output)
 
@@ -147,7 +146,7 @@ class TransformerDecoder(nn.Module):
         self.dropout = nn.Dropout(p=dropout)
 
     def forward(
-        self, memory: Tensor, tgt: Tensor, tgt_mask: Tensor = None, tgt_pad_mask: Tensor = None
+        self, memory: Tensor, tgt: Tensor, tgt_mask: Tensor = None, tgt_pad_mask: Tensor = None, output_attentions=False
     ) -> Tuple[Tensor, Tensor]:
         tgt = self.dropout(tgt)
 
@@ -156,4 +155,6 @@ class TransformerDecoder(nn.Module):
             tgt, attentions = layer(memory, tgt, tgt_mask, tgt_pad_mask)
             all_attentions.append(attentions)
         all_attentions = torch.stack(all_attentions, dim=1)
-        return tgt, all_attentions
+        if output_attentions:
+            return tgt, all_attentions
+        return tgt, None

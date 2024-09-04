@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import torch
 import torch.nn.functional as F
 
 
@@ -31,46 +32,58 @@ def visualize_encoder_attention(image, atten, layer=None):
         plt.show()
 
 
-def visualize_decoder_attention(image, decoder_attentions, layer=0, patch_size=32):
-    batch_size, channels, height, width = image.shape
-    num_patches_per_dim = height // patch_size  # Assuming square image
-    num_points = decoder_attentions.shape[2]  # Number of points in the sequence
+def process_attention_maps(
+    decoder_attentions,
+    img_size=1024,
+    channels=1,
+    layer=None,
+    patch_size=32,
+    aggreg_func: callable = lambda x: torch.mean(x, dim=2),
+):
+    num_patches_per_dim = img_size // patch_size
 
-    # Determine the grid size for plotting (e.g., 4x5 for up to 20 points)
+    batch_size, num_layers, num_heads, num_points, num_patches = decoder_attentions.shape
+
+    decoder_attentions = aggreg_func(decoder_attentions)
+
+    if layer is not None:
+        attention_map = decoder_attentions[:, layer]
+    else:
+        attention_map = decoder_attentions.mean(dim=1)
+
+    # Reshape attention map to 2D patch layout for each batch (batch_size, num_points, H_patches, W_patches)
+    attention_map = attention_map.view(batch_size, num_points, num_patches_per_dim, num_patches_per_dim)
+
+    # Upsample the attention map to match the original image size
+    attention_map = F.interpolate(attention_map, size=(img_size, img_size), mode="bilinear", align_corners=False)
+
+    # Normalize attention maps across each item in the batch
+    attention_map_min = (
+        attention_map.view(batch_size, num_points, -1).min(dim=2, keepdim=True)[0].view(batch_size, num_points, 1, 1)
+    )
+    attention_map_max = (
+        attention_map.view(batch_size, num_points, -1).max(dim=2, keepdim=True)[0].view(batch_size, num_points, 1, 1)
+    )
+    attention_map = (attention_map - attention_map_min) / (attention_map_max - attention_map_min + 1e-6)
+
+    return attention_map  # (batch_size, num_points, img_size, img_size)
+
+
+def plot_attention_maps(gen, processed_attentions):
+    num_points = len(gen)
     grid_cols = 5
-    grid_rows = (num_points + grid_cols - 1) // grid_cols  # Calculate rows based on the number of points
-
-    # Create a figure with subplots for each point in the sequence
+    grid_rows = (num_points + grid_cols - 1) // grid_cols
     fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(15, grid_rows * 3))
-
-    # Flatten axes for easier indexing
     axes = axes.flatten()
-
     for point_index in range(num_points):
-        # Select the attention map for the specified layer and point
-        attention_map = decoder_attentions[:, layer, point_index, :]  # Shape: (batch_size, num_patches)
+        axes[point_index].imshow(processed_attentions[point_index])
 
-        # Reshape to (batch_size, num_patches_per_dim, num_patches_per_dim)
-        attention_map = attention_map.reshape(batch_size, num_patches_per_dim, num_patches_per_dim)
-
-        # Upsample to match the original image size
-        attention_map = F.interpolate(
-            attention_map.unsqueeze(1), size=(height, width), mode="bilinear", align_corners=False
-        ).squeeze(1)
-
-        # Normalize the attention map for visualization
-        attention_map = (attention_map - attention_map.min()) / (attention_map.max() - attention_map.min())
-
-        # Overlay the attention map on the image
-        for i in range(batch_size):
-            axes[point_index].imshow(image[i].squeeze(), cmap="gray")  # Assuming grayscale input image
-            axes[point_index].imshow(attention_map[i].cpu().detach().numpy(), cmap="jet", alpha=0.5)
-            axes[point_index].axis("off")
-            axes[point_index].set_title(f"Point {point_index + 1}")
-
-    # Remove any empty subplots
-    for idx in range(num_points, len(axes)):
+    for idx in range(len(axes)):
         axes[idx].axis("off")
-
-    plt.tight_layout()
     plt.show()
+
+
+def preprocess_instance(ma_dict):
+    for key in ma_dict:
+        ma_dict[key] = ma_dict[key].detach().cpu().numpy()
+    return ma_dict
