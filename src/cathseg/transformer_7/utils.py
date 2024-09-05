@@ -38,13 +38,41 @@ def process_attention_maps(
     channels=1,
     layer=None,
     patch_size=32,
-    aggreg_func: callable = lambda x: torch.mean(x, dim=2),
+    discard_ratio=0.9,
+    aggreg_func: callable = lambda x: torch.max(x, dim=2),
 ):
     num_patches_per_dim = img_size // patch_size
 
     batch_size, num_layers, num_heads, num_points, num_patches = decoder_attentions.shape
 
-    decoder_attentions = aggreg_func(decoder_attentions)
+    decoder_attentions = aggreg_func(decoder_attentions)[0] # Default behaviour: average across heads.
+    
+    print("decoder attentions", decoder_attentions.shape)
+    rollout_attn = torch.eye(num_points).unsqueeze(0).repeat(batch_size, 1, 1)
+    print("rollout_attn", rollout_attn.shape)
+
+    for curr_layer in range(num_layers):
+        attention_layer = decoder_attentions[:, curr_layer]
+
+        # Mask over least significant regions based on discard_ratio.
+        #flattened_attn = attention_layer.view(batch_size, -1)
+        _, idxs = attention_layer.topk(
+                int(num_points * discard_ratio),
+                -1,
+                False
+                )
+        idxs = idxs[idxs != 0]
+        attention_layer[:, :, idxs] = 0
+
+        #attention_layer = torch.where(attention_layer >= threshold,
+        #                              attention_layer,
+        #                              torch.zeros_like(attention_layer))
+
+        identity = torch.eye(num_points).unsqueeze(0)# Identity for skip connections.
+        
+        adjusted_attention = torch.cat([identity, attention_layer[:, :, num_points:]], dim = 2)
+        
+        attention_map = rollout_attn @ adjusted_attention
 
     if layer is not None:
         attention_map = decoder_attentions[:, layer]
