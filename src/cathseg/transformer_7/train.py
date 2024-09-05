@@ -20,7 +20,7 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-IMAGE_SIZE = 256
+IMAGE_SIZE = 1024
 N_CHANNELS = 1
 MODEL_VERSION = "w_attention_viz_3"
 PROJECT = "transformer_3"
