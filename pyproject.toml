@@ -18,6 +18,7 @@ classifiers = [
 dependencies = [
     "tensorboard",
     "numpy",
+    "einops",
     "torch",
     "torchvision",
     "pytorch-lightning",
