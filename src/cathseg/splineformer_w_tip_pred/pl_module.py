@@ -203,7 +203,7 @@ class SplineFormer(pl.LightningModule):
         return X, *self.generate_sequence(X, output_attentions=True)
 
     def configure_optimizers(self):
-        optimizer = optim.NAdam(self.parameters(), lr=1e-5)
+        optimizer = optim.AdamW(self.parameters(), lr=5e-5)
         return optimizer
 
 

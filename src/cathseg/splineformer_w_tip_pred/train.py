@@ -17,12 +17,12 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "with_tip_predictor-1024-rand_crop"
-PROJECT = "transformer_3"
+MODEL_VERSION = "w_tip_pred-256"
+PROJECT = "transformer-4"
 BATCH_SIZE = 32
-IMAGE_SIZE = 1024
+IMAGE_SIZE = 256
 NUM_CHANNELS = 1
-PATCH_SIZE = 32
+PATCH_SIZE = 16
 D_MODEL = 256
 LIGHTNING_MODEL_DIR = f"lightning_model/{PROJECT}_{MODEL_VERSION}"
 
@@ -111,19 +111,22 @@ def predict():
         t_transform=t_transform,
     )
 
-    trainer = pl.Trainer(max_epochs=200, fast_dev_run=True, callbacks=[image_callback, model_checkpoint_callback])
-    pred = trainer.predict(
-        model,
-        datamodule=dm,
-        return_predictions=True,
-        ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
-        # ckpt_path="models/transformer_3-with_tip_predictor-1024-rand_crop/epoch=0-step=205.ckpt",
-    )
+    trainer = pl.Trainer(max_epochs=200, callbacks=[image_callback, model_checkpoint_callback])
+    # pred = trainer.predict(
+    #     model,
+    #     datamodule=dm,
+    #     return_predictions=True,
+    #     ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
+    # )
 
-    for batch in pred:
-        img, generated_seq, encoder_atts, decoder_atts = batch
-        # if generated_seq.shape[1] != 10:
-        #     continue
+    dm.setup("test")
+    dl = dm.test_dataloader()
+    model.eval()
+    for i, batch in enumerate(dl):
+        print(i)
+        img, generated_seq, encoder_atts, decoder_atts = model.predict_step(batch, i)
+        if generated_seq.shape[1] != 9:
+            continue
         encoder_atts = utils.process_attention_maps(
             decoder_atts,
             img_size=IMAGE_SIZE,
@@ -138,6 +141,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    # train()
+    train()
     # test()
-    predict()
+    # predict()
