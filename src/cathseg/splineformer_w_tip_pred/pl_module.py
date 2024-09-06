@@ -1,4 +1,4 @@
-import cathseg.splineformer.modules as modules
+import cathseg.splineformer_w_tip_pred.modules as modules
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
