@@ -31,12 +31,6 @@ class Guide3DModule(pl.LightningDataModule):
         self.t_transform = t_transform
 
     def setup(self, stage: str):
-        def c_transform(c):
-            return c / self.image_size
-
-        def t_transform(t):
-            return t / Guide3D.t_max
-
         vit_transform = transforms.Compose(
             [
                 transforms.ToPILImage(),  # Convert image to PIL image
@@ -57,8 +51,8 @@ class Guide3DModule(pl.LightningDataModule):
                 split="train",
                 download=self.download,
                 image_transform=vit_transform,
-                c_transform=c_transform,
-                t_transform=t_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
             )
 
             self.val_ds = Guide3D(
@@ -66,8 +60,8 @@ class Guide3DModule(pl.LightningDataModule):
                 annotations_file="sphere_wo_reconstruct.json",
                 split="val",
                 image_transform=vit_transform,
-                c_transform=c_transform,
-                t_transform=t_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
                 download=self.download,
             )
 

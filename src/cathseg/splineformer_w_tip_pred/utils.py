@@ -1,42 +1,6 @@
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-import torch.utils.data as data
-
-
-class DummyData(data.Dataset):
-    def __init__(self, num_samples, X_shape, seq_len):
-        self.num_samples = num_samples
-        self.X_shape = X_shape
-        self.point_dims = 2
-        self.seq_len = seq_len
-
-    def __len__(self):
-        return self.num_samples
-
-    def __getitem__(self, idx):
-        X = torch.randn(self.X_shape)
-
-        # Random sequence length between 1 and seq_len (inclusive)
-        seq_len = torch.randint(1, self.seq_len + 1, (1,)).item()
-
-        # Create random sequences for c_seq and t_seq
-        c_seq = torch.randn(seq_len, self.point_dims)
-        t_seq = torch.randn(seq_len, 1)
-
-        # Concatenate c_seq and t_seq along the last dimension
-        target_seq = torch.cat([c_seq, t_seq], dim=-1)
-
-        # Create the mask, initially all ones
-        target_mask = torch.ones(self.seq_len)
-
-        # Zero out the mask from the end of the current sequence length to seq_len
-        target_mask[seq_len:] = 0
-
-        # Pad target_seq to the right shape
-        target_seq = F.pad(target_seq, (0, 0, 0, self.seq_len - seq_len))
-
-        return X, target_seq, target_mask
 
 
 def visualize_encoder_attention(image, atten, layer=None):
@@ -138,38 +102,7 @@ def plot_attention_maps(gen, processed_attentions, img=None):
     plt.show()
 
 
-def get_latest_ckpt(ckpt_dir: str):
-    import re
-    from pathlib import Path
-
-    # Convert the directory path to a Path object
-    ckpt_path = Path(ckpt_dir)
-
-    # Validate if the directory exists
-    if not ckpt_path.is_dir():
-        return f"Error: Directory '{ckpt_dir}' does not exist."
-
-    # Regular expression to match the checkpoint files (e.g., epoch=154-step=31775.ckpt)
-    ckpt_pattern = re.compile(r"epoch=(\d+)-step=(\d+)\.ckpt")
-
-    # List all valid checkpoint files in the directory
-    ckpt_info = []
-    for file in ckpt_path.iterdir():  # Iterate over files in the directory
-        if file.is_file() and file.suffix == ".ckpt":  # Ensure it's a .ckpt file
-            match = ckpt_pattern.search(file.name)
-            if match:
-                epoch = int(match.group(1))
-                step = int(match.group(2))
-                ckpt_info.append((epoch, step, file.name))
-
-    # Check if any valid checkpoints were found
-    if not ckpt_info:
-        return "No valid checkpoint files found in the directory."
-
-    # Sort by epoch and step (latest epoch and step come last)
-    ckpt_info.sort(key=lambda x: (x[0], x[1]), reverse=True)
-
-    # Get the latest checkpoint file
-    latest_ckpt = ckpt_info[0][2]
-
-    return ckpt_path / latest_ckpt
+def preprocess_instance(ma_dict):
+    for key in ma_dict:
+        ma_dict[key] = ma_dict[key].detach().cpu().numpy()
+    return ma_dict
