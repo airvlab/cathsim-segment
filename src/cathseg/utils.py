@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.utils.data as data
@@ -61,6 +62,7 @@ def visualize_encoder_attention(image, atten, layer=None):
 
     # Plot the original image and attention map overlay
     for i in range(batch_size):
+        print(i)
         fig, ax = plt.subplots()
         ax.imshow(image[i].squeeze(), cmap="gray")  # Assuming grayscale input image
         ax.imshow(attention_map[i].cpu().detach().numpy(), cmap="jet", alpha=0.5)
@@ -118,12 +120,52 @@ def process_attention_maps(
     return attention_map  # (batch_size, num_points, img_size, img_size)
 
 
+def draw_points(img, c, t, control_pts_size: float = 10, line_thickness: int = 1):
+    import cv2
+    import numpy as np
+    from scipy.interpolate import splev
+
+    img = img.copy()
+
+    def in_bounds(x, y):
+        return 0 <= x < img.shape[1] and 0 <= y < img.shape[0]
+
+    samples = np.linspace(0, t[-1], 50)
+    sampled_c = splev(samples, (t, c.T, 3))
+
+    for control_point in c.astype(np.int32):
+        if not in_bounds(control_point[0], control_point[1]):
+            continue
+        img = cv2.circle(img, tuple(control_point), control_pts_size, 255, -1)
+
+    points = np.array(sampled_c).T.astype(np.int32)  # sampled_c should be in (n_points, 2)
+    points = points[None, ...]  # Shape it into (1, n_points, 2)
+
+    img = cv2.polylines(img, points, isClosed=False, color=255, thickness=line_thickness)
+
+    return img
+
+
 def plot_attention_maps(gen, processed_attentions, img=None):
     num_points = len(gen)
-    grid_cols = 5
+    grid_cols = 3
     grid_rows = (num_points + grid_cols - 1) // grid_cols
     fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(15, grid_rows * 3))
     axes = axes.flatten()
+
+    if img is not None:
+        img = img.squeeze(0).detach().cpu().numpy()
+        gen = gen.squeeze(0)
+        t = gen[:, 0:1].detach().cpu().numpy().flatten()
+        t = np.concatenate([np.zeros((4)), t], axis=0)
+        c = gen[:, 1:3].detach().cpu().numpy()
+        t = t * 1024
+        c = c * 1024
+        img = img * 255
+        img = img.astype(np.uint8)
+        img = draw_points(img, c, t)
+        img = img / 255
+
     for point_index in range(num_points):
         if img is None:
             axes[point_index].imshow(processed_attentions[point_index])
@@ -134,8 +176,10 @@ def plot_attention_maps(gen, processed_attentions, img=None):
 
     for idx in range(len(axes)):
         axes[idx].axis("off")
-    fig.savefig("attention_map.png")
-    plt.show()
+    # set spacing to be zero between subplots
+    fig.subplots_adjust(wspace=0, hspace=0)
+    fig.savefig("attention_map.png", bbox_inches="tight")
+    # plt.show()
 
 
 def get_latest_ckpt(ckpt_dir: str):

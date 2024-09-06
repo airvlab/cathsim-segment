@@ -8,6 +8,41 @@ from einops.layers.torch import Rearrange
 from torch import Tensor
 
 
+class TipPredictor(nn.Module):
+    def __init__(self, num_channels):
+        super(TipPredictor, self).__init__()
+
+        # Resize the image to 256x256 in the model
+        self.resize = nn.Upsample(size=(256, 256), mode="bilinear", align_corners=False)
+
+        # Define a very simple set of convolutional layers
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(num_channels, 16, kernel_size=3, stride=1, padding=1),  # Even fewer filters
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),  # Reduce spatial size to 128x128
+            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),  # Reduce spatial size to 64x64
+        )
+
+        # Flattened size calculation after conv layers
+        conv_output_size = 64 * 64 * 32  # Output size after 64x64 and 32 channels
+
+        # Simple fully connected layers
+        self.fc_layers = nn.Sequential(
+            nn.Linear(conv_output_size, 128),  # Reduced number of neurons
+            nn.ReLU(),
+            nn.Linear(128, 2),  # Output layer for 2D coordinates (x, y)
+        )
+
+    def forward(self, x):
+        x = self.resize(x)  # Resize input to 256x256
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)  # Flatten the output
+        out = self.fc_layers(x)
+        return out
+
+
 class SinusoidalEncoding(nn.Module):
     def __init__(self, d_model: int, max_len: int, dropout: float = 0.1):
         super(SinusoidalEncoding, self).__init__()
@@ -28,7 +63,7 @@ class SinusoidalEncoding(nn.Module):
 
 
 class PatchEmbeddings(nn.Module):
-    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, dim: int = 512):
+    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, dim: int = 768):
         super().__init__()
         self.img_size = img_size
         self.num_channels = num_channels
@@ -48,21 +83,21 @@ class PatchEmbeddings(nn.Module):
             nn.LayerNorm(dim),
         )
 
-    def forward(self, x: torch.Tensor) -> Tensor:
+    def forward(self, x: torch.Tensor):
         x = self.to_patch_embedding(x)
         return x
 
 
 class FeedForward(nn.Module):
-    def __init__(self, d_model: int = 256, hidden_dim: int = 256 * 4):
+    def __init__(self, embed_dim: int = 256, hidden_size: int = 256 * 4):
         super().__init__()
         self.ff = nn.Sequential(
-            nn.Linear(d_model, hidden_dim),
+            nn.Linear(embed_dim, hidden_size),
             nn.GELU(),
-            nn.Linear(hidden_dim, d_model),
+            nn.Linear(hidden_size, embed_dim),
         )
 
-    def forward(self, x: Tensor) -> Tensor:
+    def forward(self, x):
         return self.ff(x)
 
 
@@ -70,13 +105,18 @@ class TransformerEncoderLayer(nn.Module):
     def __init__(self, d_model: int = 256, num_heads: int = 8, ff_dim: int = 256 * 4, dropout: float = 0.00):
         super().__init__()
 
-        self.mha = nn.MultiheadAttention(batch_first=True, embed_dim=d_model, num_heads=num_heads, dropout=dropout)
+        self.mha = nn.MultiheadAttention(
+            batch_first=True,
+            embed_dim=d_model,
+            num_heads=num_heads,
+            dropout=dropout,
+        )
         self.ff = FeedForward(d_model, ff_dim)
 
         self.mha_norm = nn.LayerNorm(d_model)
         self.ff_norm = nn.LayerNorm(d_model)
 
-    def forward(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+    def forward(self, x):
         attention_outtput, attentions = self.mha(x, x, x, average_attn_weights=False)
         x = self.mha_norm(x + attention_outtput)
         mlp_output = self.ff(x)
@@ -90,7 +130,7 @@ class TransformerEncoder(nn.Module):
         super().__init__()
         self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
 
-    def forward(self, src: Tensor, output_attentions=False) -> Tuple[Tensor, Tensor]:
+    def forward(self, src, output_attentions=False):
         all_attentions = []
         for layer in self.layers:
             x, attentions = layer(src)
@@ -117,9 +157,7 @@ class TransformerDecoderLayer(nn.Module):
         self.ff_norm = nn.LayerNorm(d_model)
         self.ff_dropout = nn.Dropout(dropout)
 
-    def forward(
-        self, enc_outputs: Tensor, dec_inputs: Tensor, tgt_mask: Tensor, tgt_pad_mask: Tensor
-    ) -> Tuple[Tensor, Tensor]:
+    def forward(self, enc_outputs: Tensor, dec_inputs: Tensor, tgt_mask: Tensor, tgt_pad_mask: Tensor):
         """
         returns output (batch_size, seq_len, d_model), attentions (batch_size, n_heads, seq_len, patch_size^2)
         """
