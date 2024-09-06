@@ -71,8 +71,8 @@ class Guide3DModule(pl.LightningDataModule):
                 annotations_file="sphere_wo_reconstruct.json",
                 split="test",
                 image_transform=vit_transform,
-                c_transform=c_transform,
-                t_transform=t_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
                 download=self.download,
             )
 
