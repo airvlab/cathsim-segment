@@ -8,35 +8,70 @@ from einops.layers.torch import Rearrange
 from torch import Tensor
 
 
+class TipPredictorBckup(nn.Module):
+    def __init__(self, num_channels, image_size):
+        super(TipPredictor, self).__init__()
+
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(num_channels, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2),
+        )
+
+        # Calculate the size after the conv layers to connect to fully connected layers
+        # Assuming image_size is square, i.e., (image_size, image_size)
+        conv_output_size = image_size // (2**4)  # 4 maxpool layers reducing spatial size by 2 each
+        flattened_size = 512 * conv_output_size * conv_output_size
+
+        self.fc_layers = nn.Sequential(
+            nn.Linear(flattened_size, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 2),
+        )
+
+    def forward(self, x):
+        x = self.conv_layers(x)
+        x = x.view(x.size(0), -1)
+        out = self.fc_layers(x)
+        return out
+
+
 class TipPredictor(nn.Module):
     def __init__(self, num_channels):
         super(TipPredictor, self).__init__()
 
-        # Resize the image to 256x256 in the model
         self.resize = nn.Upsample(size=(256, 256), mode="bilinear", align_corners=False)
 
-        # Define a very simple set of convolutional layers
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(num_channels, 16, kernel_size=3, stride=1, padding=1),  # Even fewer filters
+            nn.Conv2d(num_channels, 16, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),  # Reduce spatial size to 128x128
+            nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
             nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),  # Reduce spatial size to 64x64
+            nn.MaxPool2d(kernel_size=2),
         )
 
-        # Flattened size calculation after conv layers
-        conv_output_size = 64 * 64 * 32  # Output size after 64x64 and 32 channels
+        conv_output_size = 64 * 64 * 32
 
-        # Simple fully connected layers
         self.fc_layers = nn.Sequential(
-            nn.Linear(conv_output_size, 128),  # Reduced number of neurons
+            nn.Linear(conv_output_size, 128),
             nn.ReLU(),
-            nn.Linear(128, 2),  # Output layer for 2D coordinates (x, y)
+            nn.Linear(128, 2),
         )
 
     def forward(self, x):
-        x = self.resize(x)  # Resize input to 256x256
+        x = self.resize(x)
         x = self.conv_layers(x)
         x = x.view(x.size(0), -1)  # Flatten the output
         out = self.fc_layers(x)

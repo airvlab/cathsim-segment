@@ -11,19 +11,20 @@ from pytorch_lightning.callbacks import ModelCheckpoint
 import wandb
 
 torch.manual_seed(0)
-torch.set_float32_matmul_precision("medium")
+# torch.set_float32_matmul_precision("medium")
 
 wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "no_resize"
-PROJECT = "transformer_3"
-BATCH_SIZE = 16
+MODEL_VERSION = "w_tip_pred-1024"
+PROJECT = "transformer-4"
+BATCH_SIZE = 32
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
 D_MODEL = 256
+LIGHTNING_MODEL_DIR = f"lightning_model/{PROJECT}_{MODEL_VERSION}"
 
 
 def img_untransform(img):
@@ -75,7 +76,12 @@ model_checkpoint_callback = ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}",
 
 def train():
     wandb_logger = pl.loggers.WandbLogger(project=PROJECT, log_model=True)
-    trainer = pl.Trainer(max_epochs=300, logger=wandb_logger, callbacks=[image_callback, model_checkpoint_callback])
+    trainer = pl.Trainer(
+        default_root_dir=LIGHTNING_MODEL_DIR,
+        max_epochs=300,
+        logger=wandb_logger,
+        callbacks=[image_callback, model_checkpoint_callback],
+    )
     trainer.fit(model, datamodule=dm)
     trainer.test(model, datamodule=dm)
 
@@ -90,13 +96,23 @@ def dummy_run_2():
         c_transform=c_transform,
         t_transform=t_transform,
     )
-    trainer = pl.Trainer(fast_dev_run=True, callbacks=[image_callback, model_checkpoint_callback])
+    trainer = pl.Trainer(
+        fast_dev_run=True, default_root_dir=LIGHTNING_MODEL_DIR, callbacks=[image_callback, model_checkpoint_callback]
+    )
     trainer.fit(model, datamodule=dm)
 
 
 def test():
-    trainer = pl.Trainer(callbacks=[image_callback, model_checkpoint_callback])
-    trainer.test(model, datamodule=dm, ckpt_path="best_model_path")
+    trainer = pl.Trainer(
+        # fast_dev_run=True,
+        default_root_dir=LIGHTNING_MODEL_DIR,
+        callbacks=[image_callback, model_checkpoint_callback],
+    )
+    trainer.test(
+        model,
+        datamodule=dm,
+        ckpt_path="models/transformer-4-w_tip_pred-1024/epoch=181-step=37310.ckpt",
+    )
 
 
 def predict():
@@ -110,18 +126,22 @@ def predict():
         t_transform=t_transform,
     )
 
-    trainer = pl.Trainer(max_epochs=200, callbacks=[image_callback, model_checkpoint_callback])
-    pred = trainer.predict(
-        model,
-        datamodule=dm,
-        return_predictions=True,
-        ckpt_path="models/transformer_3-with_tip_predictor/epoch=243-step=50020.ckpt",
+    trainer = pl.Trainer(
+        default_root_dir=LIGHTNING_MODEL_DIR, max_epochs=200, callbacks=[image_callback, model_checkpoint_callback]
     )
+    # pred = trainer.predict(
+    #     model,
+    #     datamodule=dm,
+    #     return_predictions=True,
+    #     ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
+    # )
 
-    for batch in pred:
-        img, generated_seq, encoder_atts, decoder_atts = batch
-        if generated_seq.shape[1] != 10:
-            continue
+    dm.setup("test")
+    dl = dm.test_dataloader()
+    model.eval()
+    for i, batch in enumerate(dl):
+        print(i)
+        img, generated_seq, encoder_atts, decoder_atts = model.predict_step(batch, i)
         encoder_atts = utils.process_attention_maps(
             decoder_atts,
             img_size=IMAGE_SIZE,
@@ -129,13 +149,14 @@ def predict():
             patch_size=PATCH_SIZE,
             layer=-1,
             aggreg_func=lambda x: torch.max(x, dim=2)[0],
-            discard_ratio=0.2,
+            discard_ratio=0.9,
         )
         utils.plot_attention_maps(generated_seq[0], encoder_atts[0], img.squeeze())
+        exit()
 
 
 if __name__ == "__main__":
     # dummy_run_2()
     # train()
-    # test()
-    predict()
+    test()
+    # predict()

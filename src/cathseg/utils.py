@@ -62,7 +62,6 @@ def visualize_encoder_attention(image, atten, layer=None):
 
     # Plot the original image and attention map overlay
     for i in range(batch_size):
-        print(i)
         fig, ax = plt.subplots()
         ax.imshow(image[i].squeeze(), cmap="gray")  # Assuming grayscale input image
         ax.imshow(attention_map[i].cpu().detach().numpy(), cmap="jet", alpha=0.5)
@@ -148,8 +147,9 @@ def draw_points(img, c, t, control_pts_size: float = 10, line_thickness: int = 1
 
 def plot_attention_maps(gen, processed_attentions, img=None):
     num_points = len(gen)
-    grid_cols = 3
+    grid_cols = 5
     grid_rows = (num_points + grid_cols - 1) // grid_cols
+    grid_rows = min(3, grid_rows)
     fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(15, grid_rows * 3))
     axes = axes.flatten()
 
@@ -172,6 +172,8 @@ def plot_attention_maps(gen, processed_attentions, img=None):
             continue
         axes[point_index].imshow(img)
         axes[point_index].imshow(processed_attentions[point_index], alpha=0.5)
+        if point_index % (grid_rows * grid_cols - 1) == 0 and point_index > 0:
+            break
         continue
 
     for idx in range(len(axes)):

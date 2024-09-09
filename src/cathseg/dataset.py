@@ -17,7 +17,7 @@ class Guide3DModule(pl.LightningDataModule):
         dataset_path=Path.home() / "data/segment-real",
         annotations_file="sphere_wo_reconstruct.json",
         batch_size=32,
-        test_batch_size=1,
+        test_batch_size=8,
         n_channels=1,
         image_size=1024,
         c_transform: callable = None,
@@ -147,6 +147,102 @@ class ResizeAndCropWithPoints:
         c_resized[:, 1] -= i
 
         return image, t_resized, c_resized
+
+
+class Guide3DSegmentModule(pl.LightningDataModule):
+    def __init__(
+        self,
+        dataset_path=Path.home() / "data/segment-real",
+        annotations_file="sphere_wo_reconstruct.json",
+        batch_size=32,
+        test_batch_size=1,
+        n_channels=1,
+        image_size=512,
+        mask_transforms=None,
+        download=False,
+    ):
+        super().__init__()
+        self.dataset_path = dataset_path
+        self.annotations_file = annotations_file
+        self.batch_size = batch_size
+        self.test_batch_size = test_batch_size
+        self.n_channels = n_channels
+        self.image_size = image_size
+        self.download = download
+        self.mask_transforms = mask_transforms
+
+    def setup(self, stage: str):
+        assert stage in ["fit", "test", "predict"], f"Expected 'fit', 'test' or 'predict' but found {stage}"
+        from guide3d.dataset.image.segment import Guide3D as Guide3DSegment
+
+        image_transform = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize((self.image_size, self.image_size)),
+                transforms.ToTensor(),
+                transforms.Grayscale(),
+            ]
+        )
+
+        if stage == "fit":
+            self.train_ds = Guide3DSegment(
+                dataset_path=self.dataset_path,
+                annotations_file="sphere_wo_reconstruct.json",
+                split="train",
+                download=self.download,
+                image_transform=image_transform,
+                mask_transform=self.mask_transforms,
+            )
+
+            self.val_ds = Guide3DSegment(
+                dataset_path=self.dataset_path,
+                annotations_file="sphere_wo_reconstruct.json",
+                split="val",
+                image_transform=image_transform,
+                mask_transform=self.mask_transforms,
+                download=self.download,
+            )
+
+        if stage == "test" or stage == "predict":
+            self.test_ds = Guide3DSegment(
+                dataset_path=self.dataset_path,
+                annotations_file="sphere_wo_reconstruct.json",
+                split="test",
+                image_transform=image_transform,
+                download=self.download,
+            )
+
+    def train_dataloader(self):
+        return data.DataLoader(
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def val_dataloader(self):
+        return data.DataLoader(
+            self.val_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def test_dataloader(self):
+        return data.DataLoader(
+            self.test_ds,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def predict_dataloader(self):
+        return data.DataLoader(
+            self.test_ds,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
 
 
 if __name__ == "__main__":

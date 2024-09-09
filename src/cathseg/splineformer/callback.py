@@ -46,11 +46,13 @@ class ImageCallbackLogger(Callback):
         pl_module.train()
         pl_module.val_step_outputs = []
 
-    def draw_points(self, img, c, t):  # White for grayscale is 255
+    def draw_points(self, img, c, t):
+        img = img.copy()
+
         def in_bounds(x, y):
             return 0 <= x < img.shape[1] and 0 <= y < img.shape[0]
 
-        samples = np.linspace(0, t[-1], 100)
+        samples = np.linspace(0, t[-1], 50)
         sampled_c = splev(samples, (t, c.T, 3))
 
         for control_point in c.astype(np.int32):
@@ -58,7 +60,10 @@ class ImageCallbackLogger(Callback):
                 continue
             img = cv2.circle(img, tuple(control_point), 2, 255, -1)
 
-        img = cv2.polylines(img, np.array(sampled_c).T.astype(np.int32)[None, ...], False, 255)
+        points = np.array(sampled_c).T.astype(np.int32)  # sampled_c should be in (n_points, 2)
+        points = points[None, ...]  # Shape it into (1, n_points, 2)
+
+        img = cv2.polylines(img, points, isClosed=False, color=255, thickness=1)
 
         return img
 
@@ -81,8 +86,10 @@ class ImageCallbackLogger(Callback):
         img = img[0] * 255  # Scaling the grayscale image
         img = img.astype(np.uint8)
 
-        img_true = self.draw_points(img.copy(), c_true, t_true)
-        img_pred = self.draw_points(img.copy(), c_pred, t_pred)
-        img_gen = self.draw_points(img.copy(), c_gen, t_gen)
+        img_true = self.draw_points(img, c_true, t_true)
+        img_pred = self.draw_points(img, c_pred, t_pred)
+        img_gen = self.draw_points(img, c_gen, t_gen)
+
+        # plot_images(img_true, img_pred, img_gen)
 
         return [img_true, img_pred, img_gen]

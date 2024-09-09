@@ -69,7 +69,13 @@ class SplineTransformer(nn.Module):
         return output, attenntions
 
     def forward(
-        self, src: Tensor, tgt: Tensor, tgt_mask: Tensor = None, tgt_pad_mask: Tensor = None, output_attentions=False
+        self,
+        src: Tensor,
+        tgt: Tensor,
+        tgt_mask: Tensor = None,
+        tgt_pad_mask: Tensor = None,
+        output_attentions=False,
+        output_memory=False,
     ):
         memory, encoder_attentions = self.encode(src=src, output_attentions=output_attentions)
         output, decoder_attentions = self.decode(
@@ -77,11 +83,13 @@ class SplineTransformer(nn.Module):
         )
         seq = self.fc_seq(output)
         eos = self.fc_eos(output)
-        return seq, eos, encoder_attentions, decoder_attentions
+        if output_memory:
+            return seq, eos, encoder_attentions, decoder_attentions, memory
+        return seq, eos, encoder_attentions, decoder_attentions, None
 
 
 def main():
-    import cathseg.splineformer.utils as utils
+    import cathseg.splineformer_w_tip_pred.utils as utils
 
     num_channels = 1
     patch_size = 32

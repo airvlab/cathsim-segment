@@ -1,15 +1,16 @@
+import cathseg.splineformer.modules as modules
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 from cathseg.splineformer.model import SplineTransformer as Model
 from torch import Tensor
 
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
-PATCH_SIZE = 16
+PATCH_SIZE = 32
 D_MODEL = 512
 
 
@@ -53,6 +54,9 @@ class SplineFormer(pl.LightningModule):
 
         self.n_dim = n_dim
         self.tgt_max_len = tgt_max_len
+        self.img_size = img_size
+
+        self.tip_predictor = modules.TipPredictor(num_channels=num_channels)
 
         self.model = Model(
             image_size=img_size,
@@ -66,11 +70,12 @@ class SplineFormer(pl.LightningModule):
             tgt_max_len=tgt_max_len,
         )
 
-        # Loss functions
+        self.criterion_tip = nn.MSELoss(reduction="none")
         self.criterion_seq = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
-        self.lambda_seq = float(img_size)
+        self.lambda_tip = 10
+        self.lambda_seq = 10
         self.lambda_eos = 1.0
 
         self.init_token = torch.zeros(1, 1 + self.n_dim)
@@ -78,31 +83,35 @@ class SplineFormer(pl.LightningModule):
         self.val_step_outputs = []
 
     def forward(self, img, tgt, tgt_mask, tgt_pad_mask):
-        seq_pred, eos_pred, encoder_atts, decoder_atts = self.model(
+        seq_pred, eos_pred, encoder_atts, decoder_atts, memory = self.model(
             src=img, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask
         )
-        return seq_pred, eos_pred.squeeze(-1), encoder_atts, decoder_atts
+        return seq_pred, eos_pred.squeeze(-1), encoder_atts, decoder_atts, memory
 
-    def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask):
+    def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask, tip_pred, tip_true):
+        loss_tip = self.criterion_tip(tip_pred, tip_true)
         loss_seq = self.criterion_seq(pred_seq, tgt_output)
         loss_eos = self.criterion_eos(eos_pred, eos_labels)
 
         loss_seq = (loss_seq * tgt_pad_mask.unsqueeze(-1)).sum()
         loss_eos = (loss_eos * tgt_pad_mask).sum()
+        loss_tip = loss_tip.sum()
 
-        loss = self.lambda_seq * loss_seq + self.lambda_eos * loss_eos
-        return loss_seq, loss_eos, loss
+        loss = self.lambda_seq * loss_seq + self.lambda_eos * loss_eos + self.lambda_tip * loss_tip
+        return loss_seq, loss_eos, loss_tip, loss
 
     def _step(self, batch, batch_idx, val=False):
         imgs, tgt, tgt_pad_mask = batch
 
-        init_token = self.init_token.expand(tgt.size(0), -1, -1).to(device=tgt.device)
-        tgt = torch.cat([init_token, tgt], 1)
+        seq_lens = tgt_pad_mask.sum(dim=1)
+        tgt_pad_mask = tgt_pad_mask[:, 1:]
+
+        tip_pred = self.tip_predictor(imgs)
+        tip_true = tgt[:, 0, 1:3]
 
         tgt_input = tgt[:, :-1, :]
         tgt_output = tgt[:, 1:, :]
 
-        # Create EOS labels: 1 for the last valid token, 0 otherwise
         eos_labels = torch.zeros_like(tgt_pad_mask)
         eos_labels[torch.arange(tgt_pad_mask.size(0)), (tgt_pad_mask.sum(dim=1) - 1).long()] = 1
         eos_labels = eos_labels.float()
@@ -110,25 +119,23 @@ class SplineFormer(pl.LightningModule):
         tgt_pad_mask = tgt_pad_mask.to(dtype=torch.float)
         tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(device=tgt_input.device)
 
-        # Forward pass
-        pred_seq, eos_pred, _, _ = self(imgs, tgt_input, tgt_mask, tgt_pad_mask)
+        pred_seq, eos_pred, _, _, _ = self(imgs, tgt_input, tgt_mask, tgt_pad_mask)
 
-        loss_seq, loss_eos, loss = self._compute_loss(pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask)
-
-        seq_lens = tgt_pad_mask.sum(dim=1)
+        loss_seq, loss_eos, loss_tip, loss = self._compute_loss(
+            pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask, tip_pred, tip_true
+        )
 
         if val:
             if len(self.val_step_outputs) < 10:
                 generated_seq, encoder_atts, decoder_atts = self.generate_sequence(imgs[0].unsqueeze(0))
-                generated_seq = generated_seq.squeeze(0)
-                t_gen = generated_seq[:, 0:1]
-                c_gen = generated_seq[:, 1:3]
+                t_gen = generated_seq[0, :, 0:1]
+                c_gen = generated_seq[0, :, 1:3]
 
                 self.val_step_outputs.append(
                     dict(
                         img=imgs[0],
-                        t_true=tgt_output[0, :, 0:1],
-                        c_true=tgt_output[0, :, 1:3],
+                        t_true=tgt[0, :, 0:1],
+                        c_true=tgt[0, :, 1:3],
                         t_pred=pred_seq[0, :, 0:1],
                         c_pred=pred_seq[0, :, 1:3],
                         t_gen=t_gen,
@@ -137,21 +144,22 @@ class SplineFormer(pl.LightningModule):
                     )
                 )
 
-        return loss_seq, loss_eos, loss
+        return loss_seq, loss_eos, loss_tip, loss
 
-    def _log(self, loss_seq, loss_eos, loss, tag):
-        self.log(f"{tag}/loss_seq", loss_seq)
-        self.log(f"{tag}/loss_eos", loss_eos)
+    def _log(self, loss_seq, loss_eos, loss_tip, loss, tag):
+        self.log(f"{tag}/loss_seq", loss_seq * self.img_size)
+        self.log(f"{tag}/loss_eos", loss_eos * self.img_size)
+        self.log(f"{tag}/loss_tip", loss_tip * self.img_size)
         self.log(f"{tag}/loss", loss)
 
     def training_step(self, batch, batch_idx):
-        loss_seq, loss_eos, loss = self._step(batch, batch_idx)
-        self._log(loss_seq, loss_eos, loss, "train")
+        loss_seq, loss_eos, loss_tip, loss = self._step(batch, batch_idx)
+        self._log(loss_seq, loss_eos, loss_tip, loss, "train")
         return loss
 
     def validation_step(self, batch, batch_idx):
-        loss_seq, loss_eos, loss = self._step(batch, batch_idx, val=True)
-        self._log(loss_seq, loss_eos, loss, "val")
+        loss_seq, loss_eos, loss_tip, loss = self._step(batch, batch_idx, val=True)
+        self._log(loss_seq, loss_eos, loss_tip, loss, "val")
         return loss
 
     def test_step(self, batch, batch_idx):
@@ -159,42 +167,52 @@ class SplineFormer(pl.LightningModule):
         batch_size, seq_len, _ = tgt.shape
 
         loss = 0
-        for img in imgs:
-            pred_seq, encoder_atts, decoder_atts = self.generate_sequence(img.unsqueeze(0))
-            pred_size = pred_seq.size(1)
-            pred_seq = F.pad(pred_seq, (0, 0, 0, seq_len - pred_size))
-            loss += self.lambda_seq * (self.criterion_seq(pred_seq, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
+        pred = torch.zeros_like(tgt)
+        seq_lens = tgt_pad_mask.sum(1)
+        pred_seq_lens = torch.zeros_like(seq_lens)
+        for i, img in enumerate(imgs):
+            pred_seq, encoder_atts, decoder_atts, meemory = self.generate_sequence(img.unsqueeze(0))
+            pred_len = pred_seq.size(1)
+            pred[i, :pred_len, :] = pred_seq[0, :, :]
+            pred_seq_lens[i] = pred_len
 
+        loss = self.lambda_seq * (self.criterion_seq(pred, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
         self.log("loss", loss)
 
-        return loss
+        losses = compute_metrics(pred, pred_seq_lens, tgt, seq_lens)
+        self.log("ssim", losses["ssim"])
 
-    def generate_sequence(self, src: Tensor, threshold: float = 0.5, output_attentions: bool = False):
+        return losses["ssim"]
+
+    def generate_sequence(
+        self, src: Tensor, threshold: float = 0.5, output_attentions: bool = False, output_memory: bool = False
+    ):
         batch_size = src.size(0)
         assert batch_size == 1, "Only batch size 1 is supported"
 
         self.eval()
+
         with torch.no_grad():
-            generated_seq = torch.zeros(1, 1, 3, device=src.device)
+            tip_pred = self.tip_predictor(src)
+            generated_seq = torch.cat([torch.zeros(batch_size, 1, device=src.device), tip_pred], dim=-1).unsqueeze(0)
 
             for i in range(self.tgt_max_len):
-                seq_pred, eos_pred, encoder_atts, decoder_atts = self.model(
-                    src=src, tgt=generated_seq, output_attentions=output_attentions
+                seq_pred, eos_pred, encoder_atts, decoder_atts, memory = self.model(
+                    src=src, tgt=generated_seq, output_attentions=output_attentions, output_memory=output_memory
                 )
                 generated_seq = torch.cat([generated_seq, seq_pred[:, -1:, :]], dim=1)
-                if eos_pred[:, -1] > threshold and i > 3:
+                if eos_pred[:, -1] > threshold and i > 2:
                     break
             generated_seq = generated_seq[:, 1:, :]
 
-        self.train()
-        return generated_seq, encoder_atts, decoder_atts
+        return generated_seq, encoder_atts, decoder_atts, memory
 
     def predict_step(self, batch, batch_idx):
         X, _, _ = batch
         return X, *self.generate_sequence(X, output_attentions=True)
 
     def configure_optimizers(self):
-        optimizer = optim.NAdam(self.parameters(), lr=1e-5)
+        optimizer = optim.AdamW(self.parameters(), lr=5e-5)
         return optimizer
 
 
@@ -204,6 +222,132 @@ def unnormalize_img(img):
     img = img * 0.5 + 0.5
     img = np.clip(img, 0, 1)[:, :, 0]
     return img
+
+
+def compute_metric(pred_seq, tgt, seq_len, step_size, metric: callable):
+    import numppy as np
+    from scipy.interpolate import splev
+
+    seq_len = seq_len.detach().cpu().numpy().astype(int)
+
+    t_true = tgt[:, :, 0:1]
+    t_pred = pred_seq[:, :, 0:1]
+
+    c_true = tgt[:, :, 1:3]
+    c_pred = pred_seq[:, :, 1:3]
+
+    c_pred = c_untransform(c_pred.detach().cpu().numpy())
+    c_true = c_untransform(c_true.detach().cpu().numpy())[:seq_len]
+
+    t_pred = t_untransform(t_pred.detach().cpu().numpy()[:seq_len]).flatten()
+    t_true = t_untransform(t_true.detach().cpu().numpy()[:seq_len]).flatten()[:seq_len]
+
+    t_pred = np.concatenate([np.zeros((4)), t_pred], axis=0)
+    t_true = np.concatenate([np.zeros((4)), t_true], axis=0)
+
+    last_t = min(t_pred[-1], t_true[-1])
+    num_steps = int(last_t / step_size) + 1
+
+    sample_idx = np.linspace(0, last_t, num_steps)
+
+    sampled_true = splev(sample_idx, (t_true, c_true.T, 3))
+    sampled_pred = splev(sample_idx, (t_true, c_true.T, 3))
+
+    return metric(sampled_true, sampled_pred)
+
+
+def plot_masks(mask_pred, mask_true):
+    import matplotlib.pyplot as plt
+
+    fig, axes = plt.subplots(mask_pred.shape[0], 2)
+    if mask_pred.shape[0] == 1:
+        axes = axes[None, :]
+    for i in range(mask_pred.shape[0]):
+        axes[i, 0].imshow(mask_pred[i].squeeze(), cmap="gray")
+        axes[i, 1].imshow(mask_true[i].squeeze(), cmap="gray")
+    for ax in axes.ravel():
+        ax.axis("off")
+    plt.show()
+
+
+def compute_metrics(pred, pred_seq_lens, tgt, seq_len):
+    from torchmetrics.image import StructuralSimilarityIndexMeasure
+
+    curves_params_true = get_params(tgt, seq_len)
+    pts_true = sample_curves(curves_params_true, 20)
+    mask_true = get_masks(pts_true, 1024)
+    mask_true = torch.tensor(mask_true).unsqueeze(1)
+
+    curves_params_pred = get_params(pred, pred_seq_lens)
+    pts_pred = sample_curves(curves_params_pred, 20)
+    mask_pred = get_masks(pts_pred, 1024)
+    mask_pred = torch.tensor(mask_pred).unsqueeze(1)
+
+    ssim = StructuralSimilarityIndexMeasure()
+    # ssim_debug = ssim(mask_true, mask_true)
+    # print("debug_ssim:", ssim_debug)
+    ssim_loss = ssim(mask_true, mask_pred)
+    plot_masks(mask_pred, mask_true)
+    return dict(ssim=ssim_loss)
+
+
+def get_masks(batch_pts, img_size):
+    import cv2
+
+    masks = np.zeros((len(batch_pts), img_size, img_size), dtype=np.uint8)
+    for i in range(len(batch_pts)):
+        mask = np.zeros((img_size, img_size), dtype=np.uint8)
+        pts = np.array(batch_pts[i]).astype(np.int32)
+        pts = pts.reshape((-1, 1, 2))
+        cv2.polylines(mask, [pts], isClosed=False, color=255, thickness=2)
+        masks[i] = mask
+
+    return masks / 255
+
+
+def get_params(params, seq_len):
+    import numpy as np
+
+    params = params.cpu().numpy()
+    params = params * 1024
+
+    ts = []
+    cs = []
+
+    for batch in range(params.shape[0]):
+        t = np.concatenate([np.zeros(4), params[batch, : seq_len[batch], 0]], axis=-1)
+        c = params[batch, : seq_len[batch], 1:3]
+        ts.append(t)
+        cs.append(c)
+
+    return zip(ts, cs)
+
+
+def sample_curves(curves, delta):
+    import numpy as np
+    from scipy.interpolate import splev
+
+    pts_list = []
+    for curve in curves:
+        t, c = curve
+        num_samples = int(t[-1] / delta) + 1
+        samples = np.linspace(0, t[-1], num_samples)
+        pts = splev(samples, (t, c.T, 3))
+        pts_list.append(np.array(pts).T)
+    return pts_list
+
+
+def get_tcks(params):
+    import numpy as np
+
+    params = params.cpu().numpy()
+
+    t = params[:, :, 0] * 1024
+    t = np.concatenate([np.zeros((params.shape[0], 4)), t], axis=-1)
+
+    c = params[:, :, 1:3] * 1024
+
+    return t, c
 
 
 def main():
@@ -228,15 +372,13 @@ def main():
         running_loss = 0.0
         for i, batch in enumerate(dl):
             img, target_seq, target_mask = batch
+            # loss = model.training_step(batch, i)
+            # print(loss)
             # plot_instance(tuple(x[0] for x in batch), dataset)
 
             # loss = model.training_step(batch, i)
-            # print(loss)
-            # exit()
-            model.test_step(batch, i)
-            exit()
+            # model.test_step(batch, i)
             model.generate_sequence(img)
-            # exit()
 
             exit()
 

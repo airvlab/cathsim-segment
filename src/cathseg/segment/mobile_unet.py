@@ -1,3 +1,8 @@
+# Mobile UNet and Inverted Residual Block
+# Author: Lafith Mattara
+# Date: July 2022
+
+
 import torch
 import torch.nn as nn
 
@@ -26,9 +31,7 @@ class InvertedResidualBlock(nn.Module):
                 nn.BatchNorm2d(ex_c),
                 nn.ReLU6(inplace=True),
                 # depthwise convolution
-                nn.ConvTranspose2d(
-                    ex_c, ex_c, 4, self.stride, 1, groups=ex_c, bias=False
-                ),
+                nn.ConvTranspose2d(ex_c, ex_c, 4, self.stride, 1, groups=ex_c, bias=False),
                 nn.BatchNorm2d(ex_c),
                 nn.ReLU6(inplace=True),
                 # pointwise convolution
@@ -70,7 +73,7 @@ class MobileUNet(nn.Module):
         super(MobileUNet, self).__init__()
 
         # encoding arm
-        self.conv3x3 = self.depthwise_conv(3, 32, p=1, s=2)
+        self.conv3x3 = self.depthwise_conv(1, 32, p=1, s=2)
         self.irb_bottleneck1 = self.irb_bottleneck(32, 16, 1, 1, 1)
         self.irb_bottleneck2 = self.irb_bottleneck(16, 24, 2, 2, 6)
         self.irb_bottleneck3 = self.irb_bottleneck(24, 32, 3, 2, 6)
@@ -86,7 +89,7 @@ class MobileUNet(nn.Module):
         self.D_irb4 = self.irb_bottleneck(24, 16, 1, 2, 6, True)
         self.DConv4x4 = nn.ConvTranspose2d(16, 16, 4, 2, 1, groups=16, bias=False)
         # Final layer: output channel number can be changed as per the usecase
-        self.conv1x1_decode = nn.Conv2d(16, 2, kernel_size=1, stride=1)
+        self.conv1x1_decode = nn.Conv2d(16, 3, kernel_size=1, stride=1)
 
     def depthwise_conv(self, in_c, out_c, k=3, s=1, p=0):
         """
@@ -144,10 +147,10 @@ class MobileUNet(nn.Module):
 
 
 if __name__ == "__main__":
-    X = torch.rand((1, 3, 1024, 1024))  # Shape immitates that of our data.
+    print("[MobileUNet]")
+
+    x = torch.rand((1, 3, 224, 224))
+
     model = MobileUNet()
-
-    Y_preds = model(X)
-
-    print(Y_preds)
-    print(Y_preds.shape)
+    out = model(x)
+    print(out.size())
