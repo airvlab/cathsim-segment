@@ -171,7 +171,7 @@ class SplineFormer(pl.LightningModule):
         seq_lens = tgt_pad_mask.sum(1)
         pred_seq_lens = torch.zeros_like(seq_lens)
         for i, img in enumerate(imgs):
-            pred_seq, encoder_atts, decoder_atts, meemory = self.generate_sequence(img.unsqueeze(0))
+            pred_seq, encoder_atts, decoder_atts, memory = self.generate_sequence(img.unsqueeze(0))
             pred_len = pred_seq.size(1)
             pred[i, :pred_len, :] = pred_seq[0, :, :]
             pred_seq_lens[i] = pred_len
