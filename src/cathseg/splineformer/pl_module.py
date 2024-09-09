@@ -4,6 +4,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from cathseg.metrics import compute_all_metrics
 from cathseg.splineformer.model import SplineTransformer as Model
 from torch import Tensor
 
@@ -180,9 +181,10 @@ class SplineFormer(pl.LightningModule):
         self.log("loss", loss)
 
         losses = compute_metrics(pred, pred_seq_lens, tgt, seq_lens)
-        self.log("ssim", losses["ssim"])
+        for k, v in losses.items():
+            self.log(k, v)
 
-        return losses["ssim"]
+        return losses
 
     def generate_sequence(
         self, src: Tensor, threshold: float = 0.5, output_attentions: bool = False, output_memory: bool = False
@@ -271,8 +273,6 @@ def plot_masks(mask_pred, mask_true):
 
 
 def compute_metrics(pred, pred_seq_lens, tgt, seq_len):
-    from torchmetrics.image import StructuralSimilarityIndexMeasure
-
     curves_params_true = get_params(tgt, seq_len)
     pts_true = sample_curves(curves_params_true, 20)
     mask_true = get_masks(pts_true, 1024)
@@ -283,12 +283,8 @@ def compute_metrics(pred, pred_seq_lens, tgt, seq_len):
     mask_pred = get_masks(pts_pred, 1024)
     mask_pred = torch.tensor(mask_pred).unsqueeze(1)
 
-    ssim = StructuralSimilarityIndexMeasure()
-    # ssim_debug = ssim(mask_true, mask_true)
-    # print("debug_ssim:", ssim_debug)
-    ssim_loss = ssim(mask_true, mask_pred)
-    plot_masks(mask_pred, mask_true)
-    return dict(ssim=ssim_loss)
+    losses = compute_all_metrics(mask_true, mask_pred)
+    return losses
 
 
 def get_masks(batch_pts, img_size):

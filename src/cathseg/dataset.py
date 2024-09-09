@@ -209,6 +209,7 @@ class Guide3DSegmentModule(pl.LightningDataModule):
                 annotations_file="sphere_wo_reconstruct.json",
                 split="test",
                 image_transform=image_transform,
+                mask_transform=self.mask_transforms,
                 download=self.download,
             )
 
