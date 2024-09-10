@@ -21,19 +21,19 @@ def img_untransform(img):
 
 
 def c_untransform(c):
-    return c * IMAGE_SIZE
+    return c
 
 
 def t_untransform(t):
-    return t * IMAGE_SIZE
+    return t
 
 
 def c_transform(c):
-    return c / 1024
+    return c
 
 
 def t_transform(t):
-    return t / 1024
+    return t
 
 
 class SplineFormer(pl.LightningModule):
@@ -168,7 +168,7 @@ class SplineFormer(pl.LightningModule):
 
         loss = self.lambda_seq * (self.criterion_seq(generated_seq, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
 
-        plot_prediction(imgs, generated_seq, pred_seq_lens)
+        # plot_prediction(imgs, generated_seq, pred_seq_lens)
 
         losses = compute_metrics(generated_seq, pred_seq_lens, tgt, seq_lens)
         for k, v in losses.items():

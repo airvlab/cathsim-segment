@@ -15,9 +15,9 @@ class Guide3DModule(pl.LightningDataModule):
     def __init__(
         self,
         dataset_path=Path.home() / "data/segment-real",
-        annotations_file="sphere_wo_reconstruct.json",
+        annotations_file="sphere_wo_reconstruct_2.json",
         batch_size=32,
-        test_batch_size=8,
+        test_batch_size=1,
         n_channels=1,
         image_size=1024,
         c_transform: callable = None,
@@ -246,8 +246,77 @@ class Guide3DSegmentModule(pl.LightningDataModule):
         )
 
 
+def sample_spline(tck: tuple, n: int = None, delta: float = None):
+    import numpy as np
+    from scipy.interpolate import splev
+
+    assert delta or n, "Either delta or n must be provided"
+    assert not (delta and n), "Only one of delta or n must be provided"
+
+    def is2d(tck):
+        return len(tck[1]) == 2
+
+    u_max = tck[0][-1]
+    num_samples = int(u_max / delta) + 1 if delta else n
+    u = np.linspace(0, u_max, num_samples)
+    if is2d(tck):
+        x, y = splev(u, tck)
+        return np.column_stack([x, y]).astype(np.int32)
+    else:
+        x, y, z = splev(u, tck)
+        return np.column_stack([x, y, z])
+
+
+def visualize_batch(batch, batch_idx):
+    import math
+
+    import matplotlib.pyplot as plt
+    import torch
+
+    imgs, tgts, tgt_pad_mask = batch
+    batch_size, seq_len, _ = tgts.shape
+
+    # Determine the grid size based on batch_size
+    cols = min(4, batch_size)  # Limit to 4 columns at most
+    rows = math.ceil(batch_size / cols)
+
+    # Set figure size dynamically based on the grid
+    fig, axs = plt.subplots(rows, cols, figsize=(cols * 4, rows * 4))
+
+    # Ensure axs is always a 2D array
+    axs = axs.ravel() if batch_size > 1 else [axs]
+
+    for instance in range(batch_size):
+        img, tgt, seq_len = imgs[instance], tgts[instance], tgt_pad_mask[instance].sum().to(int)
+
+        t = tgt[:seq_len, 0]
+        t = torch.cat([torch.zeros(4), t])
+        c = tgt[:seq_len, 1:3]
+        pts = sample_spline((t, c.T, 3), delta=10)
+
+        axs[instance].imshow(img[0], cmap="gray")
+        axs[instance].plot(c[:, 0], c[:, 1], "ro", markersize=0.1)
+        axs[instance].plot(pts[:, 0], pts[:, 1], "b", linewidth=0.5)
+
+    # Turn off axes for all subplots
+    for ax in axs:
+        ax.axis("off")
+
+    # Remove any unused subplots
+    for idx in range(batch_size, len(axs)):
+        axs[idx].remove()
+
+    fig.subplots_adjust(wspace=0, hspace=0)
+    plt.tight_layout()
+    plt.show()
+    plt.close()
+
+
 if __name__ == "__main__":
     datamodule = Guide3DModule()
     datamodule.setup("fit")
     train_dataloader = datamodule.train_dataloader()
     print("num train batches:", len(train_dataloader))
+    for batch_idx, batch in enumerate(train_dataloader):
+        visualize_batch(batch, 0)
+        exit()

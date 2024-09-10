@@ -161,27 +161,28 @@ def plot_attention_maps(gen, processed_attentions, img=None):
         c = gen[:, 1:3].detach().cpu().numpy()
         t = t * 1024
         c = c * 1024
+        img = img * 0.5 + 0.5
         img = img * 255
         img = img.astype(np.uint8)
-        img = draw_points(img, c, t)
-        img = img / 255
+        img = draw_points(img, c, t)[:, :, np.newaxis]
+        img = np.concatenate([img, img, img], -1)
 
     for point_index in range(num_points):
         if img is None:
             axes[point_index].imshow(processed_attentions[point_index])
             continue
+
         axes[point_index].imshow(img)
-        axes[point_index].imshow(processed_attentions[point_index], alpha=0.5)
+        axes[point_index].imshow(processed_attentions[point_index], alpha=0.15, cmap="jet")
         if point_index % (grid_rows * grid_cols - 1) == 0 and point_index > 0:
             break
         continue
 
     for idx in range(len(axes)):
         axes[idx].axis("off")
-    # set spacing to be zero between subplots
     fig.subplots_adjust(wspace=0, hspace=0)
     fig.savefig("attention_map.png", bbox_inches="tight")
-    # plt.show()
+    plt.show()
 
 
 def get_latest_ckpt(ckpt_dir: str):

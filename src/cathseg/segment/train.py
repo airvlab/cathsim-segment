@@ -1,4 +1,5 @@
 import cathseg.utils as utils
+import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
@@ -32,10 +33,21 @@ class SegmentModule(pl.LightningModule):
         x, y = batch
         y_hat = self(x)
         loss = self.loss(y_hat, y)
-        self.log("test/loss", loss)
+        print(y.min(), y.max())
+        y = (y >= 0.001).to(int)
+        print(y.min(), y.max())
+
         losses = compute_all_metrics(y, y_hat)
         for k, v in losses.items():
             self.log(k, v)
+        fig, axs = plt.subplots(1, 2)
+        y = y.cpu().numpy()
+        y_hat = y_hat.cpu().numpy()
+        axs[0].imshow(y[0].squeeze(), cmap="gray")
+        axs[1].imshow(y_hat[0].squeeze(), cmap="gray")
+        for ax in axs:
+            ax.axis("off")
+        plt.show()
         return loss
 
     def configure_optimizers(self):
@@ -96,5 +108,5 @@ def test(model, ckpt_name):
 if __name__ == "__main__":
     from cathseg.segment.unet import UNet
 
-    train(UNet, ckpt_name="unet")
-    # test(UNet, ckpt_name="unet")
+    # train(UNet, ckpt_name="unet")
+    test(UNet, ckpt_name="unet")

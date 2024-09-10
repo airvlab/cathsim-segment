@@ -4,47 +4,28 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
-from einops.layers.torch import Rearrange
+import torchvision.models as models
 from torch import Tensor
 
 
-class TipPredictorBckup(nn.Module):
-    def __init__(self, num_channels, image_size):
-        super(TipPredictor, self).__init__()
+class FeatureExtractor(nn.Module):
+    def __init__(self, d_model):
+        super(FeatureExtractor, self).__init__()
+        self.model = models.resnet18(pretrained=True)
 
-        self.conv_layers = nn.Sequential(
-            nn.Conv2d(num_channels, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(256, 512, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2),
-        )
+        for param in self.model.parameters():
+            param.requires_grad = False
 
-        # Calculate the size after the conv layers to connect to fully connected layers
-        # Assuming image_size is square, i.e., (image_size, image_size)
-        conv_output_size = image_size // (2**4)  # 4 maxpool layers reducing spatial size by 2 each
-        flattened_size = 512 * conv_output_size * conv_output_size
-
-        self.fc_layers = nn.Sequential(
-            nn.Linear(flattened_size, 1024),
-            nn.ReLU(),
-            nn.Linear(1024, 512),
-            nn.ReLU(),
-            nn.Linear(512, 3),
-        )
+        self.model.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+        self.model = nn.Sequential(*list(self.model.children())[:-2])
+        self.projection = nn.Linear(512, d_model)
 
     def forward(self, x):
-        x = self.conv_layers(x)
-        x = x.view(x.size(0), -1)
-        out = self.fc_layers(x)
-        return out
+        features = self.model(x)
+        batch_size, channels, height, width = features.shape
+        features = features.view(batch_size, channels, height * width).permute(0, 2, 1)
+        projected_features = self.projection(features)
+        return projected_features
 
 
 class TipPredictor(nn.Module):
@@ -73,7 +54,7 @@ class TipPredictor(nn.Module):
     def forward(self, x):
         x = self.resize(x)
         x = self.conv_layers(x)
-        x = x.view(x.size(0), -1)
+        x = x.view(x.size(0), -1)  # Flatten the output
         out = self.fc_layers(x)
         return out
 
@@ -97,32 +78,6 @@ class SinusoidalEncoding(nn.Module):
         return self.dropout(x)
 
 
-class PatchEmbeddings(nn.Module):
-    def __init__(self, img_size: int = 224, num_channels: int = 3, patch_size: int = 16, dim: int = 768):
-        super().__init__()
-        self.img_size = img_size
-        self.num_channels = num_channels
-        self.patch_size = patch_size
-        self.embed_dim = dim
-
-        patch_width, patch_height = patch_size, patch_size
-        patch_dim = num_channels * patch_size * patch_size
-
-        assert img_size % patch_size == 0, "Image size must be divisible by patch size"
-        self.num_patches = (img_size // patch_size) ** 2
-
-        self.to_patch_embedding = nn.Sequential(
-            Rearrange("b c (h p1) (w p2) -> b (h w) (p1 p2 c)", p1=patch_height, p2=patch_width),
-            nn.LayerNorm(patch_dim),
-            nn.Linear(patch_dim, dim),
-            nn.LayerNorm(dim),
-        )
-
-    def forward(self, x: torch.Tensor):
-        x = self.to_patch_embedding(x)
-        return x
-
-
 class FeedForward(nn.Module):
     def __init__(self, embed_dim: int = 256, hidden_size: int = 256 * 4):
         super().__init__()
@@ -134,47 +89,6 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.ff(x)
-
-
-class TransformerEncoderLayer(nn.Module):
-    def __init__(self, d_model: int = 256, num_heads: int = 8, ff_dim: int = 256 * 4, dropout: float = 0.00):
-        super().__init__()
-
-        self.mha = nn.MultiheadAttention(
-            batch_first=True,
-            embed_dim=d_model,
-            num_heads=num_heads,
-            dropout=dropout,
-        )
-        self.ff = FeedForward(d_model, ff_dim)
-
-        self.mha_norm = nn.LayerNorm(d_model)
-        self.ff_norm = nn.LayerNorm(d_model)
-
-    def forward(self, x):
-        attention_outtput, attentions = self.mha(x, x, x, average_attn_weights=False)
-        x = self.mha_norm(x + attention_outtput)
-        mlp_output = self.ff(x)
-        x = self.ff_norm(x + mlp_output)
-
-        return x, attentions
-
-
-class TransformerEncoder(nn.Module):
-    def __init__(self, layer=TransformerEncoderLayer, num_layers: int = 6):
-        super().__init__()
-        self.layers = nn.ModuleList([deepcopy(layer) for _ in range(num_layers)])
-
-    def forward(self, src, output_attentions=False):
-        all_attentions = []
-        for layer in self.layers:
-            x, attentions = layer(src)
-            if output_attentions:
-                all_attentions.append(attentions)
-        if output_attentions:
-            all_attentions = torch.stack(all_attentions, dim=1)
-            return x, all_attentions
-        return x, None
 
 
 class TransformerDecoderLayer(nn.Module):

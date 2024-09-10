@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 import torch
 from cathseg.callbacks import ImageCallbackLogger
 from cathseg.dataset import Guide3D, Guide3DModule
-from cathseg.splineformer.pl_module import SplineFormer as Model
+from cathseg.splineformer_cnn.pl_module import SplineFormer as Model
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
@@ -17,13 +17,13 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024_3"
+MODEL_VERSION = "cnn_1024_3"
 PROJECT = "transformer-5"
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
-D_MODEL = 256
+D_MODEL = 512
 LIGHTNING_MODEL_DIR = f"lightning_model/{PROJECT}_{MODEL_VERSION}"
 
 
@@ -50,7 +50,7 @@ def t_transform(t):
 
 dm = Guide3DModule(
     dataset_path=Path.home() / "data/segment-real/",
-    annotations_file="sphere_wo_reconstruct_2.json",
+    annotations_file="sphere_wo_reconstruct.json",
     batch_size=BATCH_SIZE,
     n_channels=NUM_CHANNELS,
     image_size=IMAGE_SIZE,
@@ -71,14 +71,14 @@ model = Model(
 image_callback = ImageCallbackLogger(
     img_untransform=img_untransform, c_untransform=c_untransform, t_untransform=t_untransform
 )
-model_checkpoint_callback = ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="train/total_loss", mode="min")
+model_checkpoint_callback = ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="val/total_loss", mode="min")
 
 
 def train():
-    wandb_logger = pl.loggers.WandbLogger(project=PROJECT, version=MODEL_VERSION, log_model=True)
+    wandb_logger = pl.loggers.WandbLogger(project=PROJECT, log_model=True)
     trainer = pl.Trainer(
         default_root_dir=LIGHTNING_MODEL_DIR,
-        max_epochs=400,
+        max_epochs=300,
         logger=wandb_logger,
         callbacks=[image_callback, model_checkpoint_callback],
     )
@@ -111,7 +111,7 @@ def test():
     trainer.test(
         model,
         datamodule=dm,
-        ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
+        ckpt_path="models/transformer-4-w_tip_pred-1024/epoch=181-step=37310.ckpt",
     )
 
 
@@ -138,15 +138,10 @@ def predict():
 
     dm.setup("test")
     dl = dm.test_dataloader()
-    Model.load_from_checkpoint(utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"))
     model.eval()
     for i, batch in enumerate(dl):
         print(i)
-        imgs, tgt, tgt_mask = batch
-        print((tgt * 1024).to(int))
-
-        img, generated_seq, encoder_atts, decoder_atts, memory = model.predict_step(batch, i)
-        print((generated_seq).to(int))
+        img, generated_seq, encoder_atts, decoder_atts = model.predict_step(batch, i)
         encoder_atts = utils.process_attention_maps(
             decoder_atts,
             img_size=IMAGE_SIZE,
@@ -154,7 +149,7 @@ def predict():
             patch_size=PATCH_SIZE,
             layer=-1,
             aggreg_func=lambda x: torch.max(x, dim=2)[0],
-            discard_ratio=0.6,
+            discard_ratio=0.9,
         )
         utils.plot_attention_maps(generated_seq[0], encoder_atts[0], img.squeeze())
         exit()
@@ -162,6 +157,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    # train()
+    train()
     # test()
-    predict()
+    # predict()

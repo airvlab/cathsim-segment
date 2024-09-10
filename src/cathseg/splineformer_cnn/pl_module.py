@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from cathseg.metrics import compute_all_metrics
-from cathseg.splineformer.model import SplineTransformer as Model
+from cathseg.splineformer_cnn.model import SplineTransformer as Model
 from torch import Tensor
 
 BATCH_SIZE = 32
@@ -71,8 +71,7 @@ class SplineFormer(pl.LightningModule):
             tgt_max_len=tgt_max_len,
         )
 
-        # self.criterion_seq = nn.MSELoss(reduction="none")
-        self.criterion_seq = nn.HuberLoss(reduction="none")
+        self.criterion_seq = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
         self.lambda_seq = 10
@@ -157,26 +156,23 @@ class SplineFormer(pl.LightningModule):
         batch_size, seq_len, _ = tgt.shape
 
         loss = 0
-        generated_seq = torch.zeros_like(tgt)
+        pred = torch.zeros_like(tgt)
         seq_lens = tgt_pad_mask.sum(1)
         pred_seq_lens = torch.zeros_like(seq_lens)
         for i, img in enumerate(imgs):
             pred_seq, encoder_atts, decoder_atts, meemory = self.generate_sequence(img.unsqueeze(0))
             pred_len = pred_seq.size(1)
-            generated_seq[i, :pred_len, :] = pred_seq[0, :, :]
+            pred[i, :pred_len, :] = pred_seq[0, :, :]
             pred_seq_lens[i] = pred_len
 
-        loss = self.lambda_seq * (self.criterion_seq(generated_seq, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
+        loss = self.lambda_seq * (self.criterion_seq(pred, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
+        self.log("loss", loss)
 
-        plot_prediction(imgs, generated_seq, pred_seq_lens)
-
-        losses = compute_metrics(generated_seq, pred_seq_lens, tgt, seq_lens)
+        losses = compute_metrics(pred, pred_seq_lens, tgt, seq_lens)
         for k, v in losses.items():
             self.log(k, v)
 
-        self.log("loss", loss)
-
-        return loss
+        return losses
 
     def generate_sequence(
         self, src: Tensor, threshold: float = 0.5, output_attentions: bool = False, output_memory: bool = False
@@ -206,55 +202,6 @@ class SplineFormer(pl.LightningModule):
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(), lr=5e-5)
         return optimizer
-
-
-def plot_prediction(imgs, pred_seqs, pred_seq_lens):
-    import math
-
-    import matplotlib.pyplot as plt
-    from cathseg.dataset import sample_spline
-
-    batch_size, seq_len, _ = pred_seqs.shape
-    n_cols = 3
-    n_rows = math.ceil(batch_size / n_cols)
-    fig, axs = plt.subplots(n_rows, n_cols, figsize=(n_cols * 2, n_rows * 2))
-
-    if isinstance(axs, np.ndarray):
-        axs = axs.ravel()
-    else:
-        axs = [axs]
-
-    for idx in range(batch_size):
-        img, seq, seq_len = imgs[idx], pred_seqs[idx], pred_seq_lens[idx]
-
-        seq = (seq * 1024).to(int)
-
-        t = seq[:seq_len, 0]
-        t = torch.cat([torch.zeros(4).to(device=t.device), t])
-        c = seq[:seq_len, 1:3]
-        img = img[0].cpu().numpy()
-
-        t = t.cpu().numpy()
-        c = c.cpu().numpy()
-
-        pts = sample_spline((t, c.T, 3), delta=10)
-
-        axs[idx].imshow(img, cmap="gray")
-        axs[idx].plot(c[:, 0], c[:, 1], "ro", markersize=1)
-        axs[idx].plot(pts[:, 0], pts[:, 1], "b", linewidth=0.5)
-
-    # Turn off axes for all subplots
-    for ax in axs:
-        ax.axis("off")
-
-    # Remove any unused subplots
-    for idx in range(batch_size, len(axs)):
-        axs[idx].remove()
-
-    fig.subplots_adjust(wspace=0, hspace=0)
-    plt.tight_layout()
-    plt.show()
-    plt.close()
 
 
 def plot_masks(mask_pred, mask_true):
