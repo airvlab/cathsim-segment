@@ -4,27 +4,95 @@ import torch.nn as nn
 
 class BSpline(nn.Module):
     def __init__(self, degree=3):
-        super(BSpline, self).__init__()
+        super().__init__()
         self.degree = degree
 
-    def bspline_basis(self, t, knots, degree):
-        n_knots = knots.shape[0] - degree - 1
-        B = torch.zeros((t.shape[0], n_knots), device=t.device)
-        for i in range(n_knots):
-            B[:, i] = ((knots[i] <= t) & (t < knots[i + 1])).float()
-        for d in range(1, degree + 1):
-            for i in range(n_knots - d):
-                denom1 = knots[i + d] - knots[i]
-                denom2 = knots[i + d + 1] - knots[i + 1]
-                term1 = ((t - knots[i]) / denom1) * B[:, i] if denom1 != 0 else 0
-                term2 = ((knots[i + d + 1] - t) / denom2) * B[:, i + 1] if denom2 != 0 else 0
-                B[:, i] = term1 + term2
-        return B
+    def forward(
+        self, coefficients, knots, masks=None, num_samples=None, delta=None, weights=None, batched=False, max_len=100
+    ):
+        if not batched:
+            return self._interpolate(coefficients, knots, num_samples=num_samples, delta=delta), None
+        return self._interpolate_batch(
+            coefficients, knots, masks, num_samples=num_samples, delta=delta, max_output_len=max_len
+        )
 
-    def forward(self, t, c, delta):
-        t_min, t_max = 0, t[-1].item()
-        padded_t = torch.cat([torch.zeros(self.degree + 1, device=t.device), t])
-        sample_points = torch.arange(t_min, t_max, delta, device=t.device)
-        B = self.bspline_basis(sample_points, padded_t, self.degree)
-        spline_values = torch.matmul(B, c.T)
-        return sample_points, spline_values
+    def _interpolate(self, coefficients, knots, num_samples=None, delta=None):
+        knots = torch.cat([torch.zeros(self.degree + 1, device=knots.device), knots])
+        t_max = knots[-1]
+        num_samples = int(t_max / delta) + 1 if delta else num_samples
+        t = torch.linspace(0, 1, num_samples, device=knots.device)
+
+        n = coefficients.shape[0]  # Number of control points
+        d = coefficients.shape[1]  # Dimensionality of control points
+
+        if self.degree < 1:
+            raise ValueError("Degree must be at least 1 (linear).")
+        if self.degree > (n - 1):
+            raise ValueError("Degree must be less than or equal to point count - 1.")
+
+        weights = torch.ones(n, device=coefficients.device)
+
+        if knots.shape[0] != n + self.degree + 1:
+            raise ValueError("Bad knot vector length.")
+
+        # Remap t to the domain of the spline
+        domain = [self.degree, knots.shape[0] - 1 - self.degree]
+        low, high = knots[domain[0]], knots[domain[1]]
+        t = t * (high - low) + low
+
+        if (t < low).any() or (t > high).any():
+            raise ValueError("Out of bounds")
+
+        # Find the correct spline segment s
+        s = torch.searchsorted(knots[domain[0] : domain[1]], t, right=True) + domain[0] - 1
+
+        # Initialize the result tensor
+        result = torch.zeros((t.shape[0], d), device=t.device)
+
+        # Convert control points to homogeneous coordinates
+        v = torch.cat((coefficients * weights.unsqueeze(-1), weights.unsqueeze(-1)), dim=-1)
+
+        # Perform de Boor recursion to evaluate the spline
+        for idx in range(t.shape[0]):
+            t_val = t[idx]
+            s_val = int(s[idx])
+
+            # Make a copy of v for this specific t value
+            v_temp = v.clone()
+
+            for l in range(1, self.degree + 2):
+                for i in range(s_val, s_val - self.degree - 1 + l, -1):
+                    denom = knots[i + self.degree + 1 - l] - knots[i]
+                    if denom != 0:
+                        alpha = (t_val - knots[i]) / denom
+                    else:
+                        alpha = 0
+
+                    # Avoid in-place operation by creating new tensors instead of assigning in-place
+                    v_temp[i] = (1 - alpha) * v_temp[i - 1].clone() + alpha * v_temp[i].clone()
+
+            # Convert back to Cartesian coordinates for the result
+            result[idx] = v_temp[s_val, :-1] / v_temp[s_val, -1]
+
+        return result
+
+    def _interpolate_batch(self, coefficients, knots, masks, num_samples=None, delta=None, max_output_len=100):
+        batch_size = coefficients.shape[0]
+        result = torch.zeros((batch_size, max_output_len, coefficients.shape[2]), device=coefficients.device)
+        result_masks = torch.zeros((batch_size, max_output_len), device=coefficients.device)
+
+        for batch_idx in range(batch_size):
+            try:
+                idx_result = self._interpolate(
+                    coefficients=coefficients[batch_idx][masks[batch_idx] == 1],
+                    knots=knots[batch_idx][masks[batch_idx] == 1],
+                    num_samples=num_samples,
+                    delta=delta,
+                )
+            except ValueError:
+                idx_result = torch.ones((max_output_len, coefficients.shape[2]), device=coefficients.device) * 100
+
+            result[batch_idx][: idx_result.shape[0]] = idx_result
+            result_masks[batch_idx][: idx_result.shape[0]] = 1
+
+        return result, result_masks

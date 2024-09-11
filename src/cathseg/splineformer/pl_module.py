@@ -1,4 +1,5 @@
 import cathseg.splineformer.modules as modules
+import cathseg.utils as utils
 import numpy as np
 import pytorch_lightning as pl
 import torch
@@ -13,6 +14,8 @@ IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
 D_MODEL = 512
+
+INSTANCE = 0
 
 
 def img_untransform(img):
@@ -75,7 +78,7 @@ class SplineFormer(pl.LightningModule):
         self.criterion_seq = nn.HuberLoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
-        self.lambda_seq = 10
+        self.lambda_seq = self.img_size
         self.lambda_eos = 1.0
 
         self.val_step_outputs = []
@@ -94,6 +97,7 @@ class SplineFormer(pl.LightningModule):
         loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum()
 
         loss = self.lambda_seq * loss_seq + self.lambda_eos * loss_eos
+
         return dict(seq=loss_seq * self.img_size, eos=loss_eos, total_loss=loss)
 
     def _step(self, batch, batch_idx, val=False):
@@ -168,7 +172,7 @@ class SplineFormer(pl.LightningModule):
 
         loss = self.lambda_seq * (self.criterion_seq(generated_seq, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
 
-        plot_prediction(imgs, generated_seq, pred_seq_lens)
+        # plot_prediction(imgs, generated_seq, pred_seq_lens)
 
         losses = compute_metrics(generated_seq, pred_seq_lens, tgt, seq_lens)
         for k, v in losses.items():
@@ -200,8 +204,25 @@ class SplineFormer(pl.LightningModule):
         return generated_seq, encoder_atts, decoder_atts, memory
 
     def predict_step(self, batch, batch_idx):
-        X, _, _ = batch
-        return X, *self.generate_sequence(X, output_attentions=True)
+        X, tgt, _ = batch
+        y_hat = self.generate_sequence(X, output_attentions=True)
+        generated_seq, encoder_atts, decoder_atts, memory = y_hat
+        img = X[0].cpu()
+        generated_seq = generated_seq.cpu()
+        encoder_atts = encoder_atts.cpu()
+        decoder_atts = decoder_atts.cpu()
+
+        decoder_atts = utils.process_attention_maps(
+            decoder_atts,
+            img_size=IMAGE_SIZE,
+            channels=NUM_CHANNELS,
+            patch_size=PATCH_SIZE,
+            layer=-1,
+            aggreg_func=lambda x: torch.max(x, dim=2)[0],
+            discard_ratio=0.7,
+        )
+        utils.plot_attention_maps(generated_seq[0, 1:], decoder_atts[0], img[0])
+        return X, *y_hat
 
     def configure_optimizers(self):
         optimizer = optim.AdamW(self.parameters(), lr=5e-5)
@@ -209,13 +230,15 @@ class SplineFormer(pl.LightningModule):
 
 
 def plot_prediction(imgs, pred_seqs, pred_seq_lens):
+    global INSTANCE
+
     import math
 
     import matplotlib.pyplot as plt
     from cathseg.dataset import sample_spline
 
     batch_size, seq_len, _ = pred_seqs.shape
-    n_cols = 3
+    n_cols = 1
     n_rows = math.ceil(batch_size / n_cols)
     fig, axs = plt.subplots(n_rows, n_cols, figsize=(n_cols * 2, n_rows * 2))
 
@@ -252,8 +275,10 @@ def plot_prediction(imgs, pred_seqs, pred_seq_lens):
         axs[idx].remove()
 
     fig.subplots_adjust(wspace=0, hspace=0)
+    fig.savefig(f"samples/{INSTANCE}.png")
+    INSTANCE += 1
     plt.tight_layout()
-    plt.show()
+    # plt.show()
     plt.close()
 
 

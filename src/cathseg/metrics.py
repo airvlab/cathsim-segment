@@ -1,6 +1,7 @@
 import lpips
 import torch
 import torch.nn as nn
+from cathseg.custom_modules import BSpline
 from piq import fsim
 from torchmetrics.functional.classification import binary_jaccard_index
 
@@ -108,3 +109,39 @@ class ChamferLoss(nn.Module):
         chamfer_loss = (chamfer_loss_pred_to_true + chamfer_loss_true_to_pred) / 2
 
         return chamfer_loss
+
+
+class MyLossFn(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.delta = 10 / 1024
+        self.bspline = BSpline(3)
+        self.mse = nn.MSELoss(reduction="none")
+
+    def forward(self, pred_seq, tgt, tgt_pad_mask):
+        pts_pred, pts_pred_masks = self.bspline(
+            coefficients=pred_seq[:, :, 1:3],
+            knots=pred_seq[:, :, 0],
+            masks=tgt_pad_mask,
+            delta=self.delta,
+            batched=True,
+        )
+        pts_tgt, pts_tgt_masks = self.bspline(
+            coefficients=tgt[:, :, 1:3], knots=tgt[:, :, 0], masks=tgt_pad_mask, delta=self.delta, batched=True
+        )
+
+        spline_loss_mask = pts_pred_masks * pts_tgt_masks
+        print(pts_tgt)
+        exit()
+        spline_loss = self.mse(pts_pred, pts_tgt)
+        spline_loss = spline_loss * spline_loss_mask.unsqueeze(-1)
+        print(spline_loss)
+
+        mers = spline_loss.sum() / spline_loss_mask.sum()
+        mete = spline_loss[:, 0].sum()
+        maxed = spline_loss.max(dim=1)[0].sum() / spline_loss_mask.sum()
+        print(mers)
+        print(mete)
+        print(maxed)
+        exit()
+        return dict(mers=mers, mete=mete, maxed=maxed)

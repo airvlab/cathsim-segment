@@ -147,10 +147,11 @@ def draw_points(img, c, t, control_pts_size: float = 10, line_thickness: int = 1
 
 def plot_attention_maps(gen, processed_attentions, img=None):
     num_points = len(gen)
-    grid_cols = 5
+    grid_cols = 3
     grid_rows = (num_points + grid_cols - 1) // grid_cols
     grid_rows = min(3, grid_rows)
-    fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(15, grid_rows * 3))
+    grid_rows = 2
+    fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(5, grid_rows * 2))
     axes = axes.flatten()
 
     if img is not None:
@@ -175,6 +176,8 @@ def plot_attention_maps(gen, processed_attentions, img=None):
         axes[point_index].imshow(img)
         axes[point_index].imshow(processed_attentions[point_index], alpha=0.15, cmap="jet")
         if point_index % (grid_rows * grid_cols - 1) == 0 and point_index > 0:
+            break
+        if point_index == num_points - 1:
             break
         continue
 

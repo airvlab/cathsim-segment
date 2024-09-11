@@ -78,11 +78,11 @@ def train():
     wandb_logger = pl.loggers.WandbLogger(project=PROJECT, version=MODEL_VERSION, log_model=True)
     trainer = pl.Trainer(
         default_root_dir=LIGHTNING_MODEL_DIR,
-        max_epochs=400,
+        max_epochs=600,
         logger=wandb_logger,
         callbacks=[image_callback, model_checkpoint_callback],
     )
-    trainer.fit(model, datamodule=dm)
+    trainer.fit(model, datamodule=dm, ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"))
     trainer.test(model, datamodule=dm)
 
 
@@ -129,19 +129,19 @@ def predict():
     trainer = pl.Trainer(
         default_root_dir=LIGHTNING_MODEL_DIR, max_epochs=200, callbacks=[image_callback, model_checkpoint_callback]
     )
-    # pred = trainer.predict(
-    #     model,
-    #     datamodule=dm,
-    #     return_predictions=True,
-    #     ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
-    # )
+    predictions = trainer.predict(
+        model,
+        datamodule=dm,
+        return_predictions=True,
+        ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
+    )
 
+    exit()
     dm.setup("test")
     dl = dm.test_dataloader()
-    Model.load_from_checkpoint(utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"))
-    model.eval()
+    # model = Model.load_from_checkpoint(utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"))
+    # model.eval()
     for i, batch in enumerate(dl):
-        print(i)
         imgs, tgt, tgt_mask = batch
         print((tgt * 1024).to(int))
 
@@ -162,6 +162,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    # train()
+    train()
     # test()
-    predict()
+    # predict()

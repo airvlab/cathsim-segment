@@ -196,7 +196,7 @@ class Guide3DSegmentModule(pl.LightningDataModule):
 
             self.val_ds = Guide3DSegment(
                 dataset_path=self.dataset_path,
-                annotations_file="sphere_wo_reconstruct.json",
+                annotations="sphere_wo_reconstruct.json",
                 split="val",
                 image_transform=image_transform,
                 mask_transform=self.mask_transforms,
@@ -313,10 +313,37 @@ def visualize_batch(batch, batch_idx):
 
 
 if __name__ == "__main__":
-    datamodule = Guide3DModule()
+    import matplotlib.pyplot as plt
+    from cathseg.custom_modules import BSpline
+
+    bspline = BSpline(3)
+    print(bspline)
+    datamodule = Guide3DModule(batch_size=2)
     datamodule.setup("fit")
     train_dataloader = datamodule.train_dataloader()
     print("num train batches:", len(train_dataloader))
     for batch_idx, batch in enumerate(train_dataloader):
-        visualize_batch(batch, 0)
+        imgs, tgts, tgt_masks = batch
+        t_values_batched = torch.linspace(0, 1, steps=100).unsqueeze(0).repeat(2, 1)
+        batch_out = bspline.forward(tgts[:, :, 1:3], tgts[:, :, 0], tgt_masks, num_samples=10, batched=True)
+
+        print(tgt_masks)
+        seq_len = tgt_masks.sum(1).to(int)[0]
+        t = tgts[0, :seq_len, 0]
+        c = tgts[0, :seq_len, 1:3]
+
+        print("Knots (t)", t.shape)
+        print("Coefficients (c)", c.shape)
+        print("Knots", t)
+        print("Coefficients", c)
+        print("Sequence length", seq_len)
+        t_values = torch.linspace(0, 1, steps=100)
+        spline_values, _ = bspline(c, t, delta=10)
+        print("Spline values", spline_values.shape)
+        # print("Spline values", spline_values)
+        plt.imshow(imgs[0, 0], cmap="gray")
+        plt.plot(spline_values[:, 0], spline_values[:, 1], "ro")
+        plt.show()
+
+        # visualize_batch(batch, 0)
         exit()
