@@ -162,6 +162,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    train()
-    # test()
+    # train()
+    test()
     # predict()

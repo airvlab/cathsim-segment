@@ -1,6 +1,9 @@
 wandb/
 lightning_logs/
 models/
+samples/
+samples_segment/
+good_samples/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

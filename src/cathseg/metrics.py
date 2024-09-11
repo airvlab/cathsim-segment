@@ -114,11 +114,12 @@ class ChamferLoss(nn.Module):
 class MyLossFn(nn.Module):
     def __init__(self):
         super().__init__()
-        self.delta = 10 / 1024
+        self.delta = 20 / 1024
         self.bspline = BSpline(3)
         self.mse = nn.MSELoss(reduction="none")
 
     def forward(self, pred_seq, tgt, tgt_pad_mask):
+        pred_seq = torch.clip(pred_seq, 0, 1)
         pts_pred, pts_pred_masks = self.bspline(
             coefficients=pred_seq[:, :, 1:3],
             knots=pred_seq[:, :, 0],
@@ -130,18 +131,10 @@ class MyLossFn(nn.Module):
             coefficients=tgt[:, :, 1:3], knots=tgt[:, :, 0], masks=tgt_pad_mask, delta=self.delta, batched=True
         )
 
-        spline_loss_mask = pts_pred_masks * pts_tgt_masks
-        print(pts_tgt)
-        exit()
         spline_loss = self.mse(pts_pred, pts_tgt)
-        spline_loss = spline_loss * spline_loss_mask.unsqueeze(-1)
-        print(spline_loss)
+        spline_loss = spline_loss * pts_tgt_masks.unsqueeze(-1)
 
-        mers = spline_loss.sum() / spline_loss_mask.sum()
-        mete = spline_loss[:, 0].sum()
-        maxed = spline_loss.max(dim=1)[0].sum() / spline_loss_mask.sum()
-        print(mers)
-        print(mete)
-        print(maxed)
-        exit()
+        mers = spline_loss.sum() / pts_tgt_masks.sum()
+        mete = spline_loss[:, 0].sum() / pts_tgt_masks.sum()
+        maxed = spline_loss.max(dim=1)[0].sum() / pts_tgt_masks.sum()
         return dict(mers=mers, mete=mete, maxed=maxed)
