@@ -4,6 +4,8 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data as data
 
+INDEX = 0
+
 
 class DummyData(data.Dataset):
     def __init__(self, num_samples, X_shape, seq_len):
@@ -146,6 +148,8 @@ def draw_points(img, c, t, control_pts_size: float = 10, line_thickness: int = 1
 
 
 def plot_attention_maps(gen, processed_attentions, img=None):
+    global INDEX
+
     num_points = len(gen)
     grid_cols = 3
     grid_rows = (num_points + grid_cols - 1) // grid_cols
@@ -184,8 +188,9 @@ def plot_attention_maps(gen, processed_attentions, img=None):
     for idx in range(len(axes)):
         axes[idx].axis("off")
     fig.subplots_adjust(wspace=0, hspace=0)
-    fig.savefig("attention_map.png", bbox_inches="tight")
-    plt.show()
+    fig.savefig(f"samples/atttention_maps/{INDEX}.png", bbox_inches="tight")
+    INDEX += 1
+    # plt.show()
 
 
 def get_latest_ckpt(ckpt_dir: str):

@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 import torch
 from cathseg.callbacks import ImageCallbackLogger
 from cathseg.dataset import Guide3D, Guide3DModule
-from cathseg.splineformer_2.pl_module import SplineFormer as Model
+from cathseg.splineformer_4.pl_module import SplineFormer as Model
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
@@ -17,7 +17,7 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024_3_deeper"
+MODEL_VERSION = "1024_3_deeper_tgt_tweak"
 PROJECT = "transformer-6"
 BATCH_SIZE = 8
 IMAGE_SIZE = 1024
@@ -167,6 +167,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    # train()
+    train()
     # test()
-    predict()
+    # predict()

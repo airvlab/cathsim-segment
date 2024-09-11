@@ -107,19 +107,18 @@ class SplineFormer(pl.LightningModule):
 
         seq_lens = tgt_pad_mask.sum(dim=1)
 
-        tgt_input = tgt[:, :-1, :]
-
         eos_labels = torch.zeros_like(tgt_pad_mask)
         eos_labels[torch.arange(tgt_pad_mask.size(0)), (tgt_pad_mask.sum(dim=1) - 1).long()] = 1
         eos_labels = eos_labels.float()
 
         tgt_pad_mask = tgt_pad_mask.to(dtype=torch.float)
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_input.size(1)).to(device=tgt_input.device)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.size(1)).to(device=tgt.device)
 
-        pred_seq, eos_pred, _, _, _ = self(imgs, tgt_input, tgt_mask, tgt_pad_mask[:, 1:])
+        pred_seq, eos_pred, _, _, _ = self(imgs, tgt, tgt_mask, tgt_pad_mask)
 
         tip_pred = self.tip_predictor(imgs).unsqueeze(1)
-        pred_seq = torch.cat([tip_pred, pred_seq], dim=1)
+        pred_seq = torch.cat([tip_pred, pred_seq], dim=1)[:, :-1, :]
+        eos_pred = eos_pred[:, :-1]
 
         losses = self._compute_loss(pred_seq, eos_pred, tgt, eos_labels[:, 1:], tgt_pad_mask)
 
