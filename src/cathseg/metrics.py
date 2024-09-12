@@ -135,6 +135,6 @@ class MyLossFn(nn.Module):
         spline_loss = spline_loss * pts_tgt_masks.unsqueeze(-1)
 
         mers = spline_loss.sum() / pts_tgt_masks.sum() * 1024
-        mete = spline_loss[:, 0].sum() / spline_loss.shape(0) * 1024
-        maxed = spline_loss.max(dim=1)[0].sum() / spline_loss.shape(0) * 1024
+        mete = spline_loss[:, 0].sum() / spline_loss.shape[0] * 1024
+        maxed = spline_loss.max(dim=1)[0].sum() / spline_loss.shape[0] * 1024
         return dict(mers=mers, mete=mete, maxed=maxed)
