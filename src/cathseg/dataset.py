@@ -5,6 +5,7 @@ import pytorch_lightning as pl
 import torch
 import torch.utils.data as data
 import torchvision.transforms.functional as F
+from guide3d.dataset.image.bezier import Guide3D as Guide3DBezier
 from guide3d.dataset.image.spline import Guide3D
 from torchvision.transforms import transforms
 
@@ -57,7 +58,7 @@ class Guide3DModule(pl.LightningDataModule):
         if stage == "fit":
             self.train_ds = Guide3D(
                 dataset_path=self.dataset_path,
-                annotations_file="sphere_wo_reconstruct.json",
+                annotations_file=self.annotations_file,
                 split="train",
                 download=self.download,
                 image_transform=image_transform,
@@ -68,19 +69,18 @@ class Guide3DModule(pl.LightningDataModule):
 
             self.val_ds = Guide3D(
                 dataset_path=self.dataset_path,
-                annotations_file="sphere_wo_reconstruct.json",
+                annotations_file=self.annotations_file,
                 split="val",
                 image_transform=image_transform,
                 c_transform=self.c_transform,
                 t_transform=self.t_transform,
-                # transform_both=self.transform_both,
                 download=self.download,
             )
 
         if stage == "test" or stage == "predict":
             self.test_ds = Guide3D(
                 dataset_path=self.dataset_path,
-                annotations_file="sphere_wo_reconstruct.json",
+                annotations_file=self.annotations_file,
                 split="test",
                 image_transform=image_transform,
                 c_transform=self.c_transform,
@@ -312,9 +312,135 @@ def visualize_batch(batch, batch_idx):
     plt.close()
 
 
+class Guide3DBezierModule(pl.LightningDataModule):
+    # max_seq_len = Guide3DBezier.max_seq_len
+    max_seq_len = 7
+
+    def __init__(
+        self,
+        dataset_path=Path.home() / "data/segment-real",
+        annotations_file="sphere_wo_reconstruct_bezier.json",
+        batch_size=32,
+        test_batch_size=1,
+        n_channels=1,
+        image_size=1024,
+        c_transform: callable = None,
+        t_transform: callable = None,
+        transform_both: callable = None,
+        download=False,
+    ):
+        super().__init__()
+        self.dataset_path = dataset_path
+        self.annotations_file = annotations_file
+        self.batch_size = batch_size
+        self.test_batch_size = test_batch_size
+        self.n_channels = n_channels
+        self.image_size = image_size
+        self.download = download
+
+        self.c_transform = c_transform
+        self.t_transform = t_transform
+        self.transform_both = transform_both
+
+    def setup(self, stage: str):
+        assert stage in ["fit", "test", "predict"], f"Expected 'fit', 'test' or 'predict' but found {stage}"
+
+        image_transform = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize((self.image_size, self.image_size)),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.repeat(self.n_channels, 1, 1)),
+                transforms.Normalize(
+                    mean=[0.5 for _ in range(self.n_channels)],
+                    std=[0.5 for _ in range(self.n_channels)],
+                ),
+            ]
+        )
+
+        if stage == "fit":
+            self.train_ds = Guide3DBezier(
+                dataset_path=self.dataset_path,
+                annotations_file=self.annotations_file,
+                split="train",
+                download=self.download,
+                image_transform=image_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
+                transform_both=self.transform_both,
+            )
+
+            self.val_ds = Guide3DBezier(
+                dataset_path=self.dataset_path,
+                annotations_file=self.annotations_file,
+                split="val",
+                image_transform=image_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
+                # transform_both=self.transform_both,
+                download=self.download,
+            )
+
+        if stage == "test" or stage == "predict":
+            self.test_ds = Guide3DBezier(
+                dataset_path=self.dataset_path,
+                annotations_file=self.annotations_file,
+                split="test",
+                image_transform=image_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
+                download=self.download,
+            )
+
+    def train_dataloader(self):
+        return data.DataLoader(
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def val_dataloader(self):
+        return data.DataLoader(
+            self.val_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def test_dataloader(self):
+        return data.DataLoader(
+            self.test_ds,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def predict_dataloader(self):
+        return data.DataLoader(
+            self.test_ds,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+
+def test_bezier():
+    dm = Guide3DBezierModule()
+    dm.setup("test")
+    val_dataloader = dm.test_dataloader()
+    for batch in val_dataloader:
+        imgs, tgts, tgt_masks = batch
+        print(tgts.shape)
+        exit()
+
+
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
     from cathseg.custom_modules import BSpline
+
+    test_bezier()
+    exit()
 
     bspline = BSpline(3)
     print(bspline)

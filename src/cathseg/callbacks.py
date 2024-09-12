@@ -1,10 +1,18 @@
 import cv2
+import guide3d.representations.curve as curve
 import numpy as np
 import pytorch_lightning as pl
+from guide3d.dataset.image.bezier import visualize_bezier
 from pytorch_lightning import Callback
 from scipy.interpolate import splev
 
 import wandb
+
+
+def visualize_bezier(control_points, img):
+    # Reconstruct the Bezier curve from the control points
+    t_values = np.linspace(0, 1, 100)  # Parameter values for the smooth curve
+    bezier_points = curve.bezier_curve(control_points, t_values)
 
 
 def plot_images(img_true, img_pred, img_gen):
@@ -24,6 +32,67 @@ def plot_images(img_true, img_pred, img_gen):
 
     plt.show()
     plt.close()
+
+
+class ImageCallbackLoggerBezier(Callback):
+    def __init__(self, img_untransform: callable, c_untransform: callable, t_untransform: callable):
+        self.img_untransform = img_untransform
+        self.c_untransform = c_untransform
+        self.t_untransform = t_untransform
+
+    def on_validation_end(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        instances = pl_module.val_step_outputs
+        instances = instances[: min(len(instances), 10)]
+
+        table = wandb.Table(columns=["GT", "Preds", "Inference"])
+        for instance in instances:
+            img_true, img_pred, img_gen = self.make_images(instance)
+
+            table.add_data(wandb.Image(img_true), wandb.Image(img_pred), wandb.Image(img_gen))
+        trainer.logger.experiment.log({"img_samples": table})
+
+        pl_module.train()
+        pl_module.val_step_outputs = []
+
+    def draw_points(self, img, c):
+        img = img.copy()
+
+        t_values = np.linspace(0, 1, 100)  # Parameter values for the smooth curve
+        bezier_points = curve.bezier_curve(c, t_values)
+
+        def in_bounds(x, y):
+            return 0 <= x < img.shape[1] and 0 <= y < img.shape[0]
+
+        for control_point in c.astype(np.int32):
+            if not in_bounds(control_point[0], control_point[1]):
+                continue
+            img = cv2.circle(img, tuple(control_point), 2, 255, -1)
+
+        points = np.array(bezier_points).astype(np.int32)  # sampled_c should be in (n_points, 2)
+        points = points[None, ...]  # Shape it into (1, n_points, 2)
+
+        img = cv2.polylines(img, points, isClosed=False, color=255, thickness=1)
+
+        return img
+
+    def make_images(self, instance):
+        # Untransform the image to its original format (grayscale)
+        img = self.img_untransform(instance["img"].detach().cpu().numpy())
+        seq_len = instance["seq_len"].detach().cpu().numpy().astype(int)
+        c_pred = self.c_untransform(instance["c_pred"].detach().cpu().numpy()[:seq_len])
+        c_true = self.c_untransform(instance["c_true"].detach().cpu().numpy()[:seq_len])
+        c_gen = self.c_untransform(instance["c_gen"].detach().cpu().numpy())
+
+        img = img[0] * 255  # Scaling the grayscale image
+        img = img.astype(np.uint8)
+
+        img_true = self.draw_points(img, c_true)
+        img_pred = self.draw_points(img, c_pred)
+        img_gen = self.draw_points(img, c_gen)
+
+        # plot_images(img_true, img_pred, img_gen)
+
+        return [img_true, img_pred, img_gen]
 
 
 class ImageCallbackLogger(Callback):
