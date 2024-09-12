@@ -46,14 +46,14 @@ class SegmentModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        y_hat = self(x)
+        y_hat = torch.sigmoid(self(x))
         loss = self.loss(y_hat, y)
         self.log("train/loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        y_hat = self(x)
+        y_hat = torch.sigmoid(self(x))
         loss = self.loss(y_hat, y)
         self.log("val/loss", loss)
         return loss
@@ -61,14 +61,14 @@ class SegmentModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         global INDEX
         x, y = batch
-        y_hat = self(x)
+        y_hat = torch.sigmoid(self(x))
         loss = self.loss(y_hat, y)
         y = (y >= 0.001).to(int)
         losses = compute_all_metrics(y, y_hat)
         for k, v in losses.items():
             self.log(k, v)
 
-        apply_blue_mask(x[0].squeeze().cpu().numpy(), y_hat[0].squeeze().cpu().numpy(), f"samples_segment/{INDEX}.png")
+        #apply_blue_mask(x[0].squeeze().cpu().numpy(), y_hat[0].squeeze().cpu().numpy(), f"samples_segment/{INDEX}.png")
         INDEX += 1
         # fig, axs = plt.subplots(1, 2)
         # y = y.cpu().numpy()
@@ -102,7 +102,7 @@ def train(model, ckpt_name, **kwargs):
         version=ckpt_name,
     )
 
-    dm = Guide3DSegmentModule(batch_size=2, image_size=1024, mask_transforms=mask_transforms)
+    dm = Guide3DSegmentModule(batch_size=1, image_size=1024, mask_transforms=mask_transforms)
     model = SegmentModule(model, **kwargs)
     model_checkpoint_callback = ModelCheckpoint(f"models/{ckpt_name}", monitor="val/loss", mode="min")
 
@@ -123,7 +123,7 @@ def test(model, ckpt_name):
         ]
     )
 
-    dm = Guide3DSegmentModule(batch_size=2, image_size=1024, mask_transforms=mask_transforms)
+    dm = Guide3DSegmentModule(batch_size=2, image_size=1024, mask_transforms=mask_transforms, dataset_path="/tmp/guide3d/guide3d/", download=True)
     model = SegmentModule(model)
     model_checkpoint_callback = ModelCheckpoint(f"models/{ckpt_name}", monitor="val/loss", mode="min")
 
@@ -131,12 +131,14 @@ def test(model, ckpt_name):
     trainer.test(
         model,
         datamodule=dm,
-        ckpt_path=utils.get_latest_ckpt(f"models/{ckpt_name}"),
+        ckpt_path="~/Downloads/epoch=31-step=69888.ckpt",
     )
 
 
 if __name__ == "__main__":
     from cathseg.segment.unet import UNet
+    from cathseg.segment.swin_unet import SwinTransformerSys as SwinUNet
 
     # train(UNet, ckpt_name="unet")
-    test(UNet, ckpt_name="unet")
+    #test(UNet, ckpt_name="unet")
+    test(SwinUNet, ckpt_name="swinunet")
