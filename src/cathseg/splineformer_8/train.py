@@ -17,7 +17,7 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024"
+MODEL_VERSION = "2"
 PROJECT = "transformer-8"
 BATCH_SIZE = 32
 IMAGE_SIZE = 1024
@@ -109,6 +109,25 @@ def dummy_run_2():
     trainer.fit(
         model,
         datamodule=dm,
+        # ckpt_path="models/transformer-8-1024/epoch=2-step=615.ckpt",
+    )
+
+
+def dummy_run_3():
+    dm = Guide3DModule(
+        dataset_path=Path.home() / "data/segment-real/",
+        annotations_file="sphere_wo_reconstruct_norm.json",
+        batch_size=2,
+        n_channels=NUM_CHANNELS,
+        image_size=IMAGE_SIZE,
+        c_transform=c_transform,
+        t_transform=t_transform,
+    )
+    trainer = pl.Trainer()
+    trainer.fit(
+        model,
+        datamodule=dm,
+        ckpt_path="models/transformer-8-1024/epoch=2-step=615.ckpt",
     )
 
 
@@ -122,6 +141,7 @@ def test():
         model,
         datamodule=dm,
         ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
+        # ckpt_path="models/transformer-8-1024/epoch=1-step=410.ckpt",
     )
 
 
@@ -162,6 +182,7 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
+    # dummy_run_3()
     train()
     # test()
     # predict()

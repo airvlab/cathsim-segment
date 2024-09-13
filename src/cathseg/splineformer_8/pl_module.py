@@ -60,11 +60,7 @@ class SplineFormer(pl.LightningModule):
         self.tgt_max_len = tgt_max_len
         self.img_size = img_size
 
-        self.tip_predictor = modules.TipPredictor(
-            # image_size=img_size,
-            num_channels=num_channels,
-            # num_dim=3,
-        )
+        self.tip_predictor = modules.TipPredictor(num_channels=num_channels)
 
         self.model = Model(
             image_size=img_size,
@@ -304,10 +300,10 @@ def plot_prediction(imgs, pred_seqs, pred_seq_lens):
         axs[idx].remove()
 
     fig.subplots_adjust(wspace=0, hspace=0)
-    fig.savefig(f"samples/splineformer/{INSTANCE}.png")
+    fig.savefig(f"samples/splineformer8/{INSTANCE}.png")
     INSTANCE += 1
     plt.tight_layout()
-    # plt.show()
+    plt.show()
     plt.close()
 
 

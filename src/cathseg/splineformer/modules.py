@@ -81,15 +81,14 @@ class TipPredictor(nn.Module):
         # Calculate the output size after convolution and pooling layers
         conv_output_size = 16 * 16 * 256  # Based on the final output dimensions after pooling
 
-        # Fully connected layers (deeper)
         self.fc_layers = nn.Sequential(
-            nn.Linear(conv_output_size, 512),  # Increase size
+            nn.Linear(conv_output_size, 512),
             nn.ReLU(),
-            nn.Linear(512, 256),  # Add extra layer
+            nn.Dropout(p=0.5),
+            nn.Linear(512, 256),
             nn.ReLU(),
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            nn.Linear(128, 3),  # Output layer with 3 neurons
+            nn.Dropout(p=0.5),
+            nn.Linear(256, 3),
         )
 
     def forward(self, x):
