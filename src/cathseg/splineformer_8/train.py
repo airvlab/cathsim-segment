@@ -17,9 +17,9 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "3"
+MODEL_VERSION = "5"
 PROJECT = "transformer-8"
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
@@ -71,7 +71,7 @@ model = Model(
 image_callback = ImageCallbackLogger(
     img_untransform=img_untransform, c_untransform=c_untransform, t_untransform=t_untransform
 )
-model_checkpoint_callback = ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="train/total_loss", mode="min")
+model_checkpoint_callback = ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="train/loss", mode="min")
 
 
 def train():

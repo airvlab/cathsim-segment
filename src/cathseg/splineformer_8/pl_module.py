@@ -60,7 +60,10 @@ class SplineFormer(pl.LightningModule):
         self.tgt_max_len = tgt_max_len
         self.img_size = img_size
 
-        self.tip_predictor = modules.TipPredictor(num_channels=num_channels)
+        self.tip_predictor = modules.TipPredictorMobileNetV2(
+            num_channels=num_channels,
+            image_size=img_size,
+        )
 
         self.model = Model(
             image_size=img_size,
@@ -74,7 +77,7 @@ class SplineFormer(pl.LightningModule):
             tgt_max_len=tgt_max_len,
         )
 
-        self.criterion_knot = nn.HuberLoss(reduction="none")
+        self.criterion_knot = nn.MSELoss(reduction="none")
         self.criterion_coeff = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
         self.criterion_bspline = BSplineLoss()
@@ -96,13 +99,13 @@ class SplineFormer(pl.LightningModule):
         return seq_pred, eos_pred.squeeze(-1), encoder_atts, decoder_atts, memory
 
     def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask):
-        loss_knot = self.criterion_knot(pred_seq[:, 1:, 0:1], tgt_output[:, 1:, 0:1])
-        loss_coeff = self.criterion_coeff(pred_seq[:, 1:, 1:3], tgt_output[:, 1:, 1:3])
+        loss_knot = self.criterion_knot(pred_seq, tgt_output)
+        loss_coeff = self.criterion_coeff(pred_seq, tgt_output)
         loss_eos = self.criterion_eos(eos_pred, eos_labels)
         loss_bspline = self.criterion_bspline(pred_seq, tgt_output, tgt_pad_mask)
 
-        loss_knot = (loss_knot * tgt_pad_mask[:, 1:].unsqueeze(-1)).sum() / tgt_pad_mask[:, 1:].sum()
-        loss_coeff = (loss_coeff * tgt_pad_mask[:, 1:].unsqueeze(-1)).sum() / tgt_pad_mask[:, 1:].sum()
+        loss_knot = (loss_knot * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
+        loss_coeff = (loss_coeff * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
         loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum() / tgt_pad_mask.sum()
 
         loss = (
@@ -117,7 +120,7 @@ class SplineFormer(pl.LightningModule):
             coeff=self.lambda_coeff * loss_coeff,
             bspline=self.lambda_bspline * loss_bspline,
             eos=loss_eos,
-            total_loss=loss,
+            loss=loss,
         )
 
     def _step(self, batch, batch_idx, val=False):
@@ -137,14 +140,9 @@ class SplineFormer(pl.LightningModule):
         pred_seq, eos_pred, _, _, _ = self(imgs, tgt_input, tgt_mask, tgt_pad_mask[:, 1:])
 
         tip_pred = self.tip_predictor(imgs)
-        tip_true = tgt[:, 0, :]
-        loss_tip = self.lambda_tip * (tip_pred - tip_true) ** 2
-
         pred_seq = torch.cat([tip_pred.unsqueeze(1), pred_seq], dim=1)
 
         losses = self._compute_loss(pred_seq, eos_pred, tgt, eos_labels[:, 1:], tgt_pad_mask)
-        losses["tip"] = loss_tip.mean()
-        losses["total"] = losses["total_loss"] + losses["tip"]
 
         if val:
             if len(self.val_step_outputs) < 10:
@@ -174,12 +172,12 @@ class SplineFormer(pl.LightningModule):
     def training_step(self, batch, batch_idx):
         losses = self._step(batch, batch_idx)
         self._log(losses, "train")
-        return losses["total_loss"]
+        return losses
 
     def validation_step(self, batch, batch_idx):
         losses = self._step(batch, batch_idx, val=True)
         self._log(losses, "val")
-        return losses["total_loss"]
+        return losses
 
     def test_step(self, batch, batch_idx):
         imgs, tgt, tgt_pad_mask = batch
