@@ -17,9 +17,9 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "2"
+MODEL_VERSION = "3"
 PROJECT = "transformer-8"
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32

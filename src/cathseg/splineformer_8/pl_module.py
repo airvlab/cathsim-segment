@@ -83,6 +83,7 @@ class SplineFormer(pl.LightningModule):
         self.lambda_coeff = 10.0
         self.lambda_eos = 1.0
         self.lambda_bspline = 1.0
+        self.lambda_tip = 100
 
         self.test_metrics = MyLossFn()
 
@@ -95,13 +96,13 @@ class SplineFormer(pl.LightningModule):
         return seq_pred, eos_pred.squeeze(-1), encoder_atts, decoder_atts, memory
 
     def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask):
-        loss_knot = self.criterion_knot(pred_seq[:, :, 0:1], tgt_output[:, :, 0:1])
-        loss_coeff = self.criterion_coeff(pred_seq[:, :, 1:3], tgt_output[:, :, 1:3])
+        loss_knot = self.criterion_knot(pred_seq[:, 1:, 0:1], tgt_output[:, 1:, 0:1])
+        loss_coeff = self.criterion_coeff(pred_seq[:, 1:, 1:3], tgt_output[:, 1:, 1:3])
         loss_eos = self.criterion_eos(eos_pred, eos_labels)
         loss_bspline = self.criterion_bspline(pred_seq, tgt_output, tgt_pad_mask)
 
-        loss_knot = (loss_knot * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
-        loss_coeff = (loss_coeff * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
+        loss_knot = (loss_knot * tgt_pad_mask[:, 1:].unsqueeze(-1)).sum() / tgt_pad_mask[:, 1:].sum()
+        loss_coeff = (loss_coeff * tgt_pad_mask[:, 1:].unsqueeze(-1)).sum() / tgt_pad_mask[:, 1:].sum()
         loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum() / tgt_pad_mask.sum()
 
         loss = (
@@ -135,10 +136,15 @@ class SplineFormer(pl.LightningModule):
 
         pred_seq, eos_pred, _, _, _ = self(imgs, tgt_input, tgt_mask, tgt_pad_mask[:, 1:])
 
-        tip_pred = self.tip_predictor(imgs).unsqueeze(1)
-        pred_seq = torch.cat([tip_pred, pred_seq], dim=1)
+        tip_pred = self.tip_predictor(imgs)
+        tip_true = tgt[:, 0, :]
+        loss_tip = self.lambda_tip * (tip_pred - tip_true) ** 2
+
+        pred_seq = torch.cat([tip_pred.unsqueeze(1), pred_seq], dim=1)
 
         losses = self._compute_loss(pred_seq, eos_pred, tgt, eos_labels[:, 1:], tgt_pad_mask)
+        losses["tip"] = loss_tip.mean()
+        losses["total"] = losses["total_loss"] + losses["tip"]
 
         if val:
             if len(self.val_step_outputs) < 10:
