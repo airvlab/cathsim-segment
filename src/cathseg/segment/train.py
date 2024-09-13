@@ -14,6 +14,7 @@ def apply_blue_mask(grayscale_img, binary_mask, output_path):
     # plt.imshow(grayscale_img)
     # plt.show()
     # exit()
+    grayscale_img = (grayscale_img + grayscale_img.min()) * (grayscale_img.max() - grayscale_img.min())
     grayscale_img = Image.fromarray(grayscale_img * 255)
     binary_mask = Image.fromarray(binary_mask)
 
@@ -61,16 +62,18 @@ class SegmentModule(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         global INDEX
         x, y = batch
-        y_hat = torch.sigmoid(self(x))
+        y_hat = self(x)
         loss = self.loss(y_hat, y)
         y = (y >= 0.001).to(int)
         losses = compute_all_metrics(y, y_hat)
         for k, v in losses.items():
             self.log(k, v)
 
-        #apply_blue_mask(x[0].squeeze().cpu().numpy(), y_hat[0].squeeze().cpu().numpy(), f"samples_segment/{INDEX}.png")
+        apply_blue_mask(
+            x[0].squeeze().cpu().numpy(), y_hat[0].squeeze().cpu().numpy(), f"samples/segmentation/{INDEX}.png"
+        )
         INDEX += 1
-        # fig, axs = plt.subplots(1, 2)
+        # plt.imshow(x[0][0].cpu().numpy(), cmap="gray")
         # y = y.cpu().numpy()
         # y_hat = y_hat.cpu().numpy()
         # axs[0].imshow(y[0].squeeze(), cmap="gray")
@@ -123,7 +126,12 @@ def test(model, ckpt_name):
         ]
     )
 
-    dm = Guide3DSegmentModule(batch_size=2, image_size=1024, mask_transforms=mask_transforms, dataset_path="/tmp/guide3d/guide3d/", download=True)
+    dm = Guide3DSegmentModule(
+        batch_size=2,
+        image_size=1024,
+        mask_transforms=mask_transforms,
+        download=True,
+    )
     model = SegmentModule(model)
     model_checkpoint_callback = ModelCheckpoint(f"models/{ckpt_name}", monitor="val/loss", mode="min")
 
@@ -131,14 +139,15 @@ def test(model, ckpt_name):
     trainer.test(
         model,
         datamodule=dm,
-        ckpt_path="~/Downloads/epoch=31-step=69888.ckpt",
+        ckpt_path=utils.get_latest_ckpt(f"models/{ckpt_name}"),
     )
 
 
 if __name__ == "__main__":
-    from cathseg.segment.unet import UNet
     from cathseg.segment.swin_unet import SwinTransformerSys as SwinUNet
+    from cathseg.segment.unet import UNet
 
     # train(UNet, ckpt_name="unet")
-    #test(UNet, ckpt_name="unet")
+    test(UNet, ckpt_name="unet")
+    exit()
     test(SwinUNet, ckpt_name="swinunet")

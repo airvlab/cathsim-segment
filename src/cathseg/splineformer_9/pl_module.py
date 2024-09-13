@@ -4,6 +4,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+from cathseg.custom_modules import BSplineLoss
 from cathseg.metrics import MyLossFn, compute_all_metrics
 from cathseg.splineformer_7.model import SplineTransformer as Model
 from torch import Tensor
@@ -80,10 +81,12 @@ class SplineFormer(pl.LightningModule):
         self.criterion_knot = nn.HuberLoss(reduction="none")
         self.criterion_coeff = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
+        self.criterion_bspline = BSplineLoss()
 
         self.lambda_knot = 100.0
         self.lambda_coeff = 100.0
         self.lambda_eos = 1.0
+        self.lambda_bspline = 10.0
 
         self.test_metrics = MyLossFn()
 
@@ -99,16 +102,23 @@ class SplineFormer(pl.LightningModule):
         loss_knot = self.criterion_knot(pred_seq[:, :, 0:1], tgt_output[:, :, 0:1])
         loss_coeff = self.criterion_coeff(pred_seq[:, :, 1:3], tgt_output[:, :, 1:3])
         loss_eos = self.criterion_eos(eos_pred, eos_labels)
+        loss_bspline = self.criterion_bspline(pred_seq, tgt_output, tgt_pad_mask)
 
         loss_knot = (loss_knot * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
         loss_coeff = (loss_coeff * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
         loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum() / tgt_pad_mask.sum()
 
-        loss = self.lambda_knot * loss_knot + self.lambda_coeff * loss_coeff + self.lambda_eos * loss_eos
+        loss = (
+            self.lambda_knot * loss_knot
+            + self.lambda_coeff * loss_coeff
+            + self.lambda_eos * loss_eos
+            + self.lambda_bspline * loss_bspline
+        )
 
         return dict(
             knot=self.lambda_knot * loss_knot,
             coeff=self.lambda_coeff * loss_coeff,
+            bspline=self.lambda_bspline * loss_bspline,
             eos=loss_eos,
             total_loss=loss,
         )

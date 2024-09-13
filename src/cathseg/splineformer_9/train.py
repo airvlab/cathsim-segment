@@ -18,7 +18,7 @@ wandb.require("core")
 
 
 MODEL_VERSION = "1024_3"
-PROJECT = "transformer-7"
+PROJECT = "transformer-9"
 BATCH_SIZE = 32
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1

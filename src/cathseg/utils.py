@@ -123,7 +123,6 @@ def process_attention_maps(
 
 def draw_points(img, c, t, control_pts_size: float = 10, line_thickness: int = 1):
     import cv2
-    import numpy as np
     from scipy.interpolate import splev
 
     img = img.copy()
@@ -161,15 +160,15 @@ def plot_attention_maps(gen, processed_attentions, img=None):
     if img is not None:
         img = img.squeeze(0).detach().cpu().numpy()
         gen = gen.squeeze(0)
-        t = gen[:, 0:1].detach().cpu().numpy().flatten()
-        t = np.concatenate([np.zeros((4)), t], axis=0)
-        c = gen[:, 1:3].detach().cpu().numpy()
-        t = t * 1024
-        c = c * 1024
+        # t = gen[:, 0:1].detach().cpu().numpy().flatten()
+        # t = np.concatenate([np.zeros((4)), t], axis=0)
+        # c = gen[:, 1:3].detach().cpu().numpy()
+        # t = t * 1024
+        # c = c * 1024
         img = img * 0.5 + 0.5
         img = img * 255
         img = img.astype(np.uint8)
-        img = draw_points(img, c, t)[:, :, np.newaxis]
+        # img = draw_points(img, c, t)[:, :, np.newaxis]
         img = np.concatenate([img, img, img], -1)
 
     for point_index in range(num_points):
@@ -177,7 +176,7 @@ def plot_attention_maps(gen, processed_attentions, img=None):
             axes[point_index].imshow(processed_attentions[point_index])
             continue
 
-        axes[point_index].imshow(img)
+        axes[point_index].imshow(img, cmap="gray")
         axes[point_index].imshow(processed_attentions[point_index], alpha=0.15, cmap="jet")
         if point_index % (grid_rows * grid_cols - 1) == 0 and point_index > 0:
             break
@@ -190,8 +189,8 @@ def plot_attention_maps(gen, processed_attentions, img=None):
     fig.subplots_adjust(wspace=0, hspace=0)
     fig.savefig(f"samples/atttention_maps/{INDEX}.png", bbox_inches="tight")
     INDEX += 1
-    plt.show()
     plt.close()
+    # plt.show()
 
 
 def get_latest_ckpt(ckpt_dir: str):
