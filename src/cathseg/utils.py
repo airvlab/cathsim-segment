@@ -190,7 +190,8 @@ def plot_attention_maps(gen, processed_attentions, img=None):
     fig.subplots_adjust(wspace=0, hspace=0)
     fig.savefig(f"samples/atttention_maps/{INDEX}.png", bbox_inches="tight")
     INDEX += 1
-    # plt.show()
+    plt.show()
+    plt.close()
 
 
 def get_latest_ckpt(ckpt_dir: str):

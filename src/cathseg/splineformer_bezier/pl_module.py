@@ -77,7 +77,7 @@ class SplineFormer(pl.LightningModule):
         self.criterion_coeff = nn.HuberLoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
-        self.lambda_coeff = 10.0
+        self.lambda_coeff = 1.0
         self.lambda_eos = 1.0
 
         self.test_metrics = MyLossFn()
@@ -90,7 +90,14 @@ class SplineFormer(pl.LightningModule):
         )
         return seq_pred, eos_pred.squeeze(-1), encoder_atts, decoder_atts, memory
 
-    def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask):
+    def _compute_loss(
+        self,
+        pred_seq,
+        eos_pred,
+        tgt_output,
+        eos_labels,
+        tgt_pad_mask
+    ):
         loss_coeff = self.criterion_coeff(pred_seq, tgt_output)
         loss_eos = self.criterion_eos(eos_pred, eos_labels)
 

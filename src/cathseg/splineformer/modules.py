@@ -51,29 +51,51 @@ class TipPredictor(nn.Module):
     def __init__(self, num_channels):
         super(TipPredictor, self).__init__()
 
+        # Resize input to a fixed size
         self.resize = nn.Upsample(size=(256, 256), mode="bilinear", align_corners=False)
 
+        # Convolutional layers (deeper with more filters)
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(num_channels, 16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
+            nn.Conv2d(num_channels, 32, kernel_size=3, stride=1, padding=1),  # Increase filters
+            nn.GELU(),
+            nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            nn.MaxPool2d(kernel_size=2),  # Downsample
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),  # Increase filters
+            nn.GELU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
             nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Increase filters
+            nn.GELU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
             nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Deeper layer
+            nn.GELU(),
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            nn.MaxPool2d(kernel_size=2),  # Final downsample
         )
 
-        conv_output_size = 64 * 64 * 32
+        # Calculate the output size after convolution and pooling layers
+        conv_output_size = 16 * 16 * 256  # Based on the final output dimensions after pooling
 
+        # Fully connected layers (deeper)
         self.fc_layers = nn.Sequential(
-            nn.Linear(conv_output_size, 128),
+            nn.Linear(conv_output_size, 512),  # Increase size
             nn.ReLU(),
-            nn.Linear(128, 3),
+            nn.Linear(512, 256),  # Add extra layer
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 3),  # Output layer with 3 neurons
         )
 
     def forward(self, x):
         x = self.resize(x)
         x = self.conv_layers(x)
-        x = x.view(x.size(0), -1)
+        x = x.view(x.size(0), -1)  # Flatten
         out = self.fc_layers(x)
         return out
 

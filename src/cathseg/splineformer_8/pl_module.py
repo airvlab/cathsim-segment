@@ -4,9 +4,9 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
+from cathseg.custom_modules import BSplineLoss
 from cathseg.metrics import MyLossFn, compute_all_metrics
 from cathseg.splineformer_8.model import SplineTransformer as Model
-from cathseg.custom_modules import BSplineLoss
 from torch import Tensor
 
 BATCH_SIZE = 32
@@ -60,10 +60,10 @@ class SplineFormer(pl.LightningModule):
         self.tgt_max_len = tgt_max_len
         self.img_size = img_size
 
-        self.tip_predictor = modules.TipPredictorMobileNetV2(
-            image_size=img_size,
+        self.tip_predictor = modules.TipPredictor(
+            # image_size=img_size,
             num_channels=num_channels,
-            num_dim=3,
+            # num_dim=3,
         )
 
         self.model = Model(
@@ -83,8 +83,8 @@ class SplineFormer(pl.LightningModule):
         self.criterion_eos = nn.BCELoss(reduction="none")
         self.criterion_bspline = BSplineLoss()
 
-        self.lambda_knot = 100.0
-        self.lambda_coeff = 100.0
+        self.lambda_knot = 10.0
+        self.lambda_coeff = 10.0
         self.lambda_eos = 1.0
         self.lambda_bspline = 1.0
 
