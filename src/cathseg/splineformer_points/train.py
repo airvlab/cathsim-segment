@@ -1,25 +1,26 @@
 from pathlib import Path
 
 import cathseg.utils as utils
+import numpy as np
 import pytorch_lightning as pl
 import torch
-from cathseg.callbacks import ImageCallbackLogger
-from cathseg.dataset import Guide3DModule
-from cathseg.splineformer_easy.pl_module import SplineFormer as Model
+from cathseg.callbacks import ImageCallbackLoggerPoints
+from cathseg.dataset import Guide3DPointsModule
+from cathseg.splineformer_points.pl_module import SplineFormer as Model
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
 
-# torch.manual_seed(2)
+torch.manual_seed(0)
 torch.set_float32_matmul_precision("high")
 
 wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024"
+MODEL_VERSION = "1024_pts"
 PROJECT = "transformer-7"
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
@@ -33,24 +34,23 @@ def img_untransform(img):
 
 
 def c_untransform(c):
+    return c / IMAGE_SIZE
+
+
+def c_transform(c):
     return c * IMAGE_SIZE
 
 
 def t_untransform(t):
-    return t
-
-
-def c_transform(c):
-    return c / IMAGE_SIZE
+    return np.clip(t * 1500, 0, 1500)
 
 
 def t_transform(t):
-    return t
+    return np.clip(t / 1500, 0, 1)
 
 
-dm = Guide3DModule(
+dm = Guide3DPointsModule(
     dataset_path=Path.home() / "data/segment-real/",
-    annotations_file="sphere_wo_reconstruct_norm.json",
     batch_size=BATCH_SIZE,
     n_channels=NUM_CHANNELS,
     image_size=IMAGE_SIZE,
@@ -59,16 +59,16 @@ dm = Guide3DModule(
 )
 
 model = Model(
-    tgt_max_len=23,
+    tgt_max_len=Guide3DPointsModule.max_seq_len,
     img_size=IMAGE_SIZE,
     num_channels=NUM_CHANNELS,
     d_model=D_MODEL,
     patch_size=PATCH_SIZE,
     num_heads=8,
-    dropout=0,
+    dropout=0.1,
 )
 
-image_callback = ImageCallbackLogger(
+image_callback = ImageCallbackLoggerPoints(
     img_untransform=img_untransform, c_untransform=c_untransform, t_untransform=t_untransform
 )
 model_checkpoint_callback = ModelCheckpoint(f"models/{PROJECT}-{MODEL_VERSION}", monitor="train/total_loss", mode="min")
@@ -92,9 +92,8 @@ def train():
 
 
 def dummy_run_2():
-    dm = Guide3DModule(
+    dm = Guide3DPointsModule(
         dataset_path=Path.home() / "data/segment-real/",
-        annotations_file="sphere_wo_reconstruct_norm.json",
         batch_size=1,
         n_channels=NUM_CHANNELS,
         image_size=IMAGE_SIZE,
@@ -121,6 +120,15 @@ def test():
 
 
 def predict():
+    dm = Guide3DPointsModule(
+        dataset_path=Path.home() / "data/segment-real/",
+        batch_size=1,
+        n_channels=NUM_CHANNELS,
+        image_size=IMAGE_SIZE,
+        c_transform=c_transform,
+        t_transform=t_transform,
+    )
+
     trainer = pl.Trainer(
         default_root_dir=LIGHTNING_MODEL_DIR, max_epochs=200, callbacks=[image_callback, model_checkpoint_callback]
     )
@@ -156,7 +164,7 @@ def predict():
 
 
 if __name__ == "__main__":
-    dummy_run_2()
-    # train()
+    # dummy_run_2()
+    train()
     # test()
     # predict()

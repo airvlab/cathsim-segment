@@ -18,13 +18,13 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024_bezier"
+MODEL_VERSION = "1024_bezier_2"
 PROJECT = "transformer-7"
 BATCH_SIZE = 8
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
-D_MODEL = 1024
+D_MODEL = 512
 LIGHTNING_MODEL_DIR = f"lightning_model/{PROJECT}_{MODEL_VERSION}"
 
 

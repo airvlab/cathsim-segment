@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
-from x_transformers import Encoder, ViTransformerWrapper
 
 
 class SplineTransformer(nn.Module):
@@ -22,58 +21,52 @@ class SplineTransformer(nn.Module):
     ):
         super().__init__()
 
-        self.encoder = ViTransformerWrapper(
-            channels=num_channels,
-            image_size=image_size,
-            patch_size=patch_size,
-            attn_layers=Encoder(
-                dim=d_model,
-                depth=num_layers_encoder,
-                heads=8,
-            ),
+        self.patch_embedding = modules.PatchEmbeddings(
+            img_size=image_size, num_channels=num_channels, patch_size=patch_size, dim=d_model
+        )
+        self.src_seq_len = self.patch_embedding.num_patches
+        self.positional_encoding = modules.LearnedPositionalEncoding(d_model=d_model, max_len=self.src_seq_len)
+
+        transformer_encoder_layer = modules.TransformerEncoderLayer(
+            d_model=d_model, num_heads=num_heads, ff_dim=d_model * 4, dropout=dropout
         )
 
-        decoder_layer = nn.TransformerDecoderLayer(d_model=d_model, nhead=num_heads, dropout=dropout)
-        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers_decoder)
+        self.transformer_encoder = modules.TransformerEncoder(
+            layer=transformer_encoder_layer,
+            num_layers=num_layers_encoder,
+        )
 
-        self.target_embedding = nn.Linear(dim_pts + 1, d_model)
+        self.target_embedding = nn.Linear(dim_pts, d_model)
         self.target_sinuisodal_encoding = modules.SinusoidalEncoding(d_model=d_model, max_len=tgt_max_len)
-        # self.target_sinuisodal_encoding = AbsolutePositionalEmbedding(d_model, tgt_max_len)
 
-        transformer_decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=num_heads,
-            dim_feedforward=d_model * 4,
-            dropout=dropout,
-            batch_first=True,
+        transformer_decoder_layer = modules.TransformerDecoderLayer(
+            d_model=d_model, num_heads=num_heads, ff_dim=d_model * 4, dropout=dropout
         )
 
-        self.transformer_decoder = nn.TransformerDecoder(
-            transformer_decoder_layer,
+        self.transformer_decoder = modules.TransformerDecoder(
+            layer=transformer_decoder_layer,
             num_layers=num_layers_decoder,
+            dropout=dropout,
         )
 
-        self.fc_knot = nn.Sequential(
-            nn.Linear(d_model, 1),  # Predicting n_dim control and 1D knots
-            nn.Softplus(),
-        )
-        self.fc_coeff = nn.Sequential(
-            nn.Linear(d_model + 1, dim_pts),  # Predicting n_dim control and 1D knots
-            nn.Softplus(),
-        )
+        self.coeff_pred = nn.Linear(d_model, dim_pts)
         self.fc_eos = nn.Sequential(nn.Linear(d_model, 1), nn.Sigmoid())  # Predicting end-of-sequence token
 
     def encode(self, src: Tensor, output_attentions=False) -> torch.Tensor:
-        memory = self.encoder(src, return_embeddings=True)
-        return memory, None
+        src = self.patch_embedding(src)
+        src = self.positional_encoding(src)
+        memory, attentions = self.transformer_encoder(src, output_attentions=output_attentions)
+        return memory, attentions
 
     def decode(
         self, memory: Tensor, tgt: Tensor, tgt_mask: Tensor = None, tgt_pad_mask: Tensor = None, output_attentions=False
     ) -> Tensor:
         tgt = self.target_embedding(tgt)
         tgt = self.target_sinuisodal_encoding(tgt)
-        output = self.decoder(tgt, memory=memory, tgt_mask=tgt_mask, tgt_key_padding_mask=tgt_pad_mask)
-        return output, None
+        output, attenntions = self.transformer_decoder(
+            memory=memory, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask, output_attentions=output_attentions
+        )
+        return output, attenntions
 
     def forward(
         self,
@@ -88,9 +81,7 @@ class SplineTransformer(nn.Module):
         output, decoder_attentions = self.decode(
             memory=memory, tgt=tgt, tgt_mask=tgt_mask, tgt_pad_mask=tgt_pad_mask, output_attentions=output_attentions
         )
-        knot = self.fc_knot(output)
-        coeff = self.fc_coeff(torch.cat([knot, output], dim=-1))
-        seq = torch.cat((knot, coeff), dim=-1)
+        seq = self.coeff_pred(output)
         eos = self.fc_eos(output)
         if output_memory:
             return seq, eos, encoder_attentions, decoder_attentions, memory
