@@ -18,7 +18,7 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024_pts"
+MODEL_VERSION = "1024_pts_2"
 PROJECT = "transformer-7"
 BATCH_SIZE = 8
 IMAGE_SIZE = 1024
@@ -34,11 +34,11 @@ def img_untransform(img):
 
 
 def c_untransform(c):
-    return c / IMAGE_SIZE
+    return c
 
 
 def c_transform(c):
-    return c * IMAGE_SIZE
+    return c
 
 
 def t_untransform(t):
@@ -157,7 +157,7 @@ def predict():
             patch_size=PATCH_SIZE,
             layer=-1,
             aggreg_func=lambda x: torch.max(x, dim=2)[0],
-            discard_ratio=0.6,
+            discard_ratio=0.9,
         )
         utils.plot_attention_maps(generated_seq[0], encoder_atts[0], img.squeeze())
         exit()
@@ -165,6 +165,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    train()
-    # test()
+    # train()
+    test()
     # predict()

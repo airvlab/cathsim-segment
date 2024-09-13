@@ -2,6 +2,38 @@ import torch
 import torch.nn as nn
 
 
+class BSplineLoss(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.degree = 3
+        self.bspline = BSpline(self.degree)
+        self.loss = nn.MSELoss(reduction="none")
+
+    def forward(self, pred_seq, true_seq, true_masks):
+        pred_knots = pred_seq[:, :, 0]
+        pred_coeffs = pred_seq[:, :, 1:3]
+        true_knots = true_seq[:, :, 0]
+        true_coeffs = true_seq[:, :, 1:3]
+
+        sampled_true, sampled_mask = self.bspline(
+            true_coeffs, true_knots, true_masks, num_samples=20, batched=True, max_len=20
+        )
+        sampled_pred, sampled_mask = self.bspline(
+            pred_coeffs, pred_knots, true_masks, num_samples=20, batched=True, max_len=20
+        )
+        # print(sampled_true.shape)
+        # sampled_true = sampled_true[0][sampled_mask[0] == 1].cpu().numpy() * 1024
+        # print(sampled_true.shape)
+        # plt.imshow(np.ones((1024, 1024)), cmap="gray")
+        # print(sampled_true)
+        # plt.plot(sampled_true[:, 0], sampled_true[:, 1], "ro")
+        # plt.show()
+        # exit()
+
+        loss = (self.loss(sampled_pred, sampled_true) * sampled_mask.unsqueeze(-1)).sum() / sampled_mask.sum()
+        return loss
+
+
 class BSpline(nn.Module):
     def __init__(self, degree=3):
         super().__init__()

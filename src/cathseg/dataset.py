@@ -6,6 +6,7 @@ import torch
 import torch.utils.data as data
 import torchvision.transforms.functional as F
 from guide3d.dataset.image.bezier import Guide3D as Guide3DBezier
+from guide3d.dataset.image.points import Guide3D as Guide3DPoints
 from guide3d.dataset.image.spline import Guide3D
 from torchvision.transforms import transforms
 
@@ -81,7 +82,7 @@ class Guide3DModule(pl.LightningDataModule):
             self.test_ds = Guide3D(
                 dataset_path=self.dataset_path,
                 annotations_file=self.annotations_file,
-                split="test",
+                split="train",
                 image_transform=image_transform,
                 c_transform=self.c_transform,
                 t_transform=self.t_transform,
@@ -260,7 +261,7 @@ def sample_spline(tck: tuple, n: int = None, delta: float = None):
     num_samples = int(u_max / delta) + 1 if delta else n
     u = np.linspace(0, u_max, num_samples)
     if is2d(tck):
-        x, y = splev(u, tck)
+        x, y = splev(u, tck, ext=3)
         return np.column_stack([x, y]).astype(np.int32)
     else:
         x, y, z = splev(u, tck)
@@ -383,6 +384,119 @@ class Guide3DBezierModule(pl.LightningDataModule):
 
         if stage == "test" or stage == "predict":
             self.test_ds = Guide3DBezier(
+                dataset_path=self.dataset_path,
+                annotations_file=self.annotations_file,
+                split="test",
+                image_transform=image_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
+                download=self.download,
+            )
+
+    def train_dataloader(self):
+        return data.DataLoader(
+            self.train_ds,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def val_dataloader(self):
+        return data.DataLoader(
+            self.val_ds,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def test_dataloader(self):
+        return data.DataLoader(
+            self.test_ds,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+    def predict_dataloader(self):
+        return data.DataLoader(
+            self.test_ds,
+            batch_size=self.test_batch_size,
+            shuffle=False,
+            num_workers=os.cpu_count() // 2,
+        )
+
+
+class Guide3DPointsModule(pl.LightningDataModule):
+    # max_seq_len = Guide3DPoints.max_seq_len
+    max_seq_len = 128
+
+    def __init__(
+        self,
+        dataset_path=Path.home() / "data/segment-real",
+        annotations_file="sphere_wo_reconstruct.json",
+        batch_size=32,
+        test_batch_size=1,
+        n_channels=1,
+        image_size=1024,
+        c_transform: callable = None,
+        t_transform: callable = None,
+        transform_both: callable = None,
+        download=False,
+    ):
+        super().__init__()
+        self.dataset_path = dataset_path
+        self.annotations_file = annotations_file
+        self.batch_size = batch_size
+        self.test_batch_size = test_batch_size
+        self.n_channels = n_channels
+        self.image_size = image_size
+        self.download = download
+
+        self.c_transform = c_transform
+        self.t_transform = t_transform
+        self.transform_both = transform_both
+
+    def setup(self, stage: str):
+        assert stage in ["fit", "test", "predict"], f"Expected 'fit', 'test' or 'predict' but found {stage}"
+
+        image_transform = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize((self.image_size, self.image_size)),
+                transforms.ToTensor(),
+                transforms.Lambda(lambda x: x.repeat(self.n_channels, 1, 1)),
+                transforms.Normalize(
+                    mean=[0.5 for _ in range(self.n_channels)],
+                    std=[0.5 for _ in range(self.n_channels)],
+                ),
+            ]
+        )
+
+        if stage == "fit":
+            self.train_ds = Guide3DPoints(
+                dataset_path=self.dataset_path,
+                annotations_file=self.annotations_file,
+                split="train",
+                download=self.download,
+                image_transform=image_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
+                transform_both=self.transform_both,
+            )
+
+            self.val_ds = Guide3DPoints(
+                dataset_path=self.dataset_path,
+                annotations_file=self.annotations_file,
+                split="val",
+                image_transform=image_transform,
+                c_transform=self.c_transform,
+                t_transform=self.t_transform,
+                # transform_both=self.transform_both,
+                download=self.download,
+            )
+
+        if stage == "test" or stage == "predict":
+            self.test_ds = Guide3DPoints(
                 dataset_path=self.dataset_path,
                 annotations_file=self.annotations_file,
                 split="test",
