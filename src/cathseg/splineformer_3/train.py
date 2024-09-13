@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 import torch
 from cathseg.callbacks import ImageCallbackLogger
 from cathseg.dataset import Guide3D, Guide3DModule
-from cathseg.splineformer.pl_module import SplineFormer as Model
+from cathseg.splineformer_3.pl_module import SplineFormer as Model
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
@@ -17,13 +17,13 @@ wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024_3"
-PROJECT = "transformer-5"
-BATCH_SIZE = 32
+MODEL_VERSION = "spline_2"
+PROJECT = "transformer-6"
+BATCH_SIZE = 16
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
-D_MODEL = 256
+D_MODEL = 512
 LIGHTNING_MODEL_DIR = f"lightning_model/{PROJECT}_{MODEL_VERSION}"
 
 
@@ -78,11 +78,11 @@ def train():
     wandb_logger = pl.loggers.WandbLogger(project=PROJECT, version=MODEL_VERSION, log_model=True)
     trainer = pl.Trainer(
         default_root_dir=LIGHTNING_MODEL_DIR,
-        max_epochs=600,
+        max_epochs=400,
         logger=wandb_logger,
         callbacks=[image_callback, model_checkpoint_callback],
     )
-    trainer.fit(model, datamodule=dm, ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"))
+    trainer.fit(model, datamodule=dm)
     trainer.test(model, datamodule=dm)
 
 
@@ -162,6 +162,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    # train()
-    test()
+    train()
+    # test()
     # predict()

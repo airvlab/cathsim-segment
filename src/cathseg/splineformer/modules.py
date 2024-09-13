@@ -10,10 +10,10 @@ from torch import Tensor
 
 class TipPredictorBckup(nn.Module):
     def __init__(self, num_channels, image_size):
-        super(TipPredictor, self).__init__()
+        super().__init__()
 
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(num_channels, 64, kernel_size=3, stride=1, padding=1),
+            nn.Conv2d(num_channels, 64, kernel_size=3, stride=4, padding=1),
             nn.ReLU(),
             nn.MaxPool2d(kernel_size=2),
             nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
@@ -37,7 +37,7 @@ class TipPredictorBckup(nn.Module):
             nn.ReLU(),
             nn.Linear(1024, 512),
             nn.ReLU(),
-            nn.Linear(512, 2),
+            nn.Linear(512, 3),
         )
 
     def forward(self, x):
@@ -51,29 +51,96 @@ class TipPredictor(nn.Module):
     def __init__(self, num_channels):
         super(TipPredictor, self).__init__()
 
+        # Resize input to a fixed size
         self.resize = nn.Upsample(size=(256, 256), mode="bilinear", align_corners=False)
 
+        # Convolutional layers (deeper with more filters)
         self.conv_layers = nn.Sequential(
-            nn.Conv2d(num_channels, 16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
+            nn.Conv2d(num_channels, 32, kernel_size=3, stride=1, padding=1),  # Increase filters
+            nn.GELU(),
+            nn.Conv2d(32, 32, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            nn.MaxPool2d(kernel_size=2),  # Downsample
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),  # Increase filters
+            nn.GELU(),
+            nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
             nn.MaxPool2d(kernel_size=2),
-            nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),  # Increase filters
+            nn.GELU(),
+            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
             nn.MaxPool2d(kernel_size=2),
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),  # Deeper layer
+            nn.GELU(),
+            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            nn.MaxPool2d(kernel_size=2),  # Final downsample
         )
 
-        conv_output_size = 64 * 64 * 32
+        # Calculate the output size after convolution and pooling layers
+        conv_output_size = 16 * 16 * 256  # Based on the final output dimensions after pooling
 
+        # Fully connected layers (deeper)
         self.fc_layers = nn.Sequential(
-            nn.Linear(conv_output_size, 128),
+            nn.Linear(conv_output_size, 512),  # Increase size
             nn.ReLU(),
-            nn.Linear(128, 2),
+            nn.Linear(512, 256),  # Add extra layer
+            nn.ReLU(),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Linear(128, 3),  # Output layer with 3 neurons
         )
 
     def forward(self, x):
         x = self.resize(x)
         x = self.conv_layers(x)
-        x = x.view(x.size(0), -1)  # Flatten the output
+        x = x.view(x.size(0), -1)  # Flatten
+        out = self.fc_layers(x)
+        return out
+
+
+class TipPredictorMobileNetV2(nn.Module):
+    def __init__(self, num_channels, image_size, num_dim=3, freeze_backbone=False):
+        super().__init__()
+        from torchvision import models
+
+        # Load a lightweight pre-trained MobileNetV2 as a feature extractor
+        mobilenet = models.mobilenet_v2(weights=models.MobileNet_V2_Weights.DEFAULT)
+
+        # If num_channels is not 3 (default RGB), adjust the first layer
+        if num_channels != 3:
+            mobilenet.features[0][0] = nn.Conv2d(num_channels, 32, kernel_size=3, stride=8, padding=1)
+
+        # We use all the convolutional layers of MobileNetV2, except for the last classifier
+        self.feature_extractor = mobilenet.features
+
+        # Freeze the backbone if specified
+        if freeze_backbone:
+            for param in self.feature_extractor.parameters():
+                param.requires_grad = False
+
+        # Compute the output size of the feature extractor dynamically
+        with torch.no_grad():
+            dummy_input = torch.randn(1, num_channels, image_size, image_size)
+            dummy_output = self.feature_extractor(dummy_input)
+            conv_output_size = dummy_output.shape[1] * dummy_output.shape[2] * dummy_output.shape[3]
+
+        # Fully connected layers for regression
+        self.fc_layers = nn.Sequential(
+            nn.Linear(conv_output_size, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, num_dim),
+        )
+
+    def forward(self, x):
+        # Extract features using the pre-trained model
+        x = self.feature_extractor(x)
+        # Flatten the output
+        x = x.view(x.size(0), -1)
+        # Pass through fully connected layers
         out = self.fc_layers(x)
         return out
 
@@ -94,6 +161,22 @@ class SinusoidalEncoding(nn.Module):
     def forward(self, x):
         seq_len = x.size(1)  # [batch_size, seq_len, d_model]
         x = x + self.pe[:, :seq_len, :]
+        return self.dropout(x)
+
+
+class LearnedPositionalEncoding(nn.Module):
+    def __init__(self, d_model: int, max_len: int, dropout: float = 0.1):
+        super(LearnedPositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        # Learnable positional encodings
+        self.pos_embedding = nn.Parameter(torch.zeros(1, max_len, d_model))  # [1, max_len, d_model]
+        nn.init.normal_(self.pos_embedding, mean=0, std=0.02)  # Initialize with a normal distribution
+
+    def forward(self, x):
+        seq_len = x.size(1)  # [batch_size, seq_len, d_model]
+        # Add positional embeddings
+        x = x + self.pos_embedding[:, :seq_len, :]
         return self.dropout(x)
 
 

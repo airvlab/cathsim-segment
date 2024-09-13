@@ -1,29 +1,30 @@
 from pathlib import Path
 
 import cathseg.utils as utils
+import numpy as np
 import pytorch_lightning as pl
 import torch
 from cathseg.callbacks import ImageCallbackLogger
 from cathseg.dataset import Guide3D, Guide3DModule
-from cathseg.splineformer.pl_module import SplineFormer as Model
+from cathseg.splineformer_6.pl_module import SplineFormer as Model
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
 
 torch.manual_seed(0)
-torch.set_float32_matmul_precision("medium")
+torch.set_float32_matmul_precision("high")
 
 wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024_3"
-PROJECT = "transformer-5"
-BATCH_SIZE = 32
+MODEL_VERSION = "1024_2"
+PROJECT = "transformer-7"
+BATCH_SIZE = 8
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
-D_MODEL = 256
+D_MODEL = 1024
 LIGHTNING_MODEL_DIR = f"lightning_model/{PROJECT}_{MODEL_VERSION}"
 
 
@@ -33,19 +34,19 @@ def img_untransform(img):
 
 
 def c_untransform(c):
-    return c * IMAGE_SIZE
+    return np.clip(c * IMAGE_SIZE, 0, IMAGE_SIZE)
 
 
 def t_untransform(t):
-    return t * IMAGE_SIZE
+    return np.clip(t * 1500, 0, 1500)
 
 
 def c_transform(c):
-    return c / 1024
+    return np.clip(c / IMAGE_SIZE, 0, 1)
 
 
 def t_transform(t):
-    return t / 1024
+    return np.clip(t / 1500, 0, 1)
 
 
 dm = Guide3DModule(
@@ -81,8 +82,13 @@ def train():
         max_epochs=600,
         logger=wandb_logger,
         callbacks=[image_callback, model_checkpoint_callback],
+        gradient_clip_val=1,
     )
-    trainer.fit(model, datamodule=dm, ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"))
+    trainer.fit(
+        model,
+        datamodule=dm,
+        # ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),,
+    )
     trainer.test(model, datamodule=dm)
 
 
@@ -132,7 +138,7 @@ def predict():
     predictions = trainer.predict(
         model,
         datamodule=dm,
-        return_predictions=True,
+        return_predictions=False,
         ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
     )
 
@@ -161,7 +167,7 @@ def predict():
 
 
 if __name__ == "__main__":
-    # dummy_run_2()
+    dummy_run_2()
     # train()
-    test()
+    # test()
     # predict()

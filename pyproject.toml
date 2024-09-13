@@ -23,6 +23,8 @@ dependencies = [
     "torchvision",
     "pytorch-lightning",
     "guide3d@git+https://github.com/airvlab/guide3d.git",
+    "piq",
+    "lpips"
 ]
 
 

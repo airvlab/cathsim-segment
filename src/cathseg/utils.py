@@ -4,6 +4,8 @@ import torch
 import torch.nn.functional as F
 import torch.utils.data as data
 
+INDEX = 0
+
 
 class DummyData(data.Dataset):
     def __init__(self, num_samples, X_shape, seq_len):
@@ -146,11 +148,14 @@ def draw_points(img, c, t, control_pts_size: float = 10, line_thickness: int = 1
 
 
 def plot_attention_maps(gen, processed_attentions, img=None):
+    global INDEX
+
     num_points = len(gen)
-    grid_cols = 5
+    grid_cols = 3
     grid_rows = (num_points + grid_cols - 1) // grid_cols
     grid_rows = min(3, grid_rows)
-    fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(15, grid_rows * 3))
+    grid_rows = 2
+    fig, axes = plt.subplots(grid_rows, grid_cols, figsize=(5, grid_rows * 2))
     axes = axes.flatten()
 
     if img is not None:
@@ -161,27 +166,32 @@ def plot_attention_maps(gen, processed_attentions, img=None):
         c = gen[:, 1:3].detach().cpu().numpy()
         t = t * 1024
         c = c * 1024
+        img = img * 0.5 + 0.5
         img = img * 255
         img = img.astype(np.uint8)
-        img = draw_points(img, c, t)
-        img = img / 255
+        img = draw_points(img, c, t)[:, :, np.newaxis]
+        img = np.concatenate([img, img, img], -1)
 
     for point_index in range(num_points):
         if img is None:
             axes[point_index].imshow(processed_attentions[point_index])
             continue
+
         axes[point_index].imshow(img)
-        axes[point_index].imshow(processed_attentions[point_index], alpha=0.5)
+        axes[point_index].imshow(processed_attentions[point_index], alpha=0.15, cmap="jet")
         if point_index % (grid_rows * grid_cols - 1) == 0 and point_index > 0:
+            break
+        if point_index == num_points - 1:
             break
         continue
 
     for idx in range(len(axes)):
         axes[idx].axis("off")
-    # set spacing to be zero between subplots
     fig.subplots_adjust(wspace=0, hspace=0)
-    fig.savefig("attention_map.png", bbox_inches="tight")
-    # plt.show()
+    fig.savefig(f"samples/atttention_maps/{INDEX}.png", bbox_inches="tight")
+    INDEX += 1
+    plt.show()
+    plt.close()
 
 
 def get_latest_ckpt(ckpt_dir: str):

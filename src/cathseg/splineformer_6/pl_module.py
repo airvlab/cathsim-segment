@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from cathseg.metrics import compute_all_metrics
+from cathseg.metrics import MyLossFn, compute_all_metrics
 from cathseg.splineformer_6.model import SplineTransformer as Model
 from torch import Tensor
 
@@ -60,7 +60,7 @@ class SplineFormer(pl.LightningModule):
         self.tgt_max_len = tgt_max_len
         self.img_size = img_size
 
-        self.tip_predictor = modules.TipPredictor(num_channels=num_channels)
+        self.tip_predictor = modules.TipPredictorMobileNetV2(image_size=img_size, num_channels=num_channels)
 
         self.model = Model(
             image_size=img_size,
@@ -74,12 +74,15 @@ class SplineFormer(pl.LightningModule):
             tgt_max_len=tgt_max_len,
         )
 
-        # self.criterion_seq = nn.MSELoss(reduction="none")
-        self.criterion_seq = nn.HuberLoss(reduction="none")
+        self.criterion_knot = nn.MSELoss(reduction="none")
+        self.criterion_coeff = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
-        self.lambda_seq = self.img_size
+        self.lambda_coeff = self.img_size
+        self.lambda_knot = 1500
         self.lambda_eos = 1.0
+
+        self.test_metrics = MyLossFn()
 
         self.val_step_outputs = []
 
@@ -90,15 +93,17 @@ class SplineFormer(pl.LightningModule):
         return seq_pred, eos_pred.squeeze(-1), encoder_atts, decoder_atts, memory
 
     def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask):
-        loss_seq = self.criterion_seq(pred_seq, tgt_output)
+        loss_knot = self.criterion_knot(pred_seq[:, :, 0:1], tgt_output[:, :, 0:1])
+        loss_coeff = self.criterion_coeff(pred_seq[:, :, 1:3], tgt_output[:, :, 1:3])
         loss_eos = self.criterion_eos(eos_pred, eos_labels)
 
-        loss_seq = (loss_seq * tgt_pad_mask.unsqueeze(-1)).sum()
-        loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum()
+        loss_knot = (loss_knot * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
+        loss_coeff = (loss_coeff * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
+        loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum() / tgt_pad_mask.sum()
 
-        loss = self.lambda_seq * loss_seq + self.lambda_eos * loss_eos
+        loss = self.lambda_knot * loss_knot + self.lambda_coeff * loss_coeff + self.lambda_eos * loss_eos
 
-        return dict(seq=loss_seq * self.img_size, eos=loss_eos, total_loss=loss)
+        return dict(coeff=loss_coeff, knot=loss_knot, eos=loss_eos, total_loss=loss)
 
     def _step(self, batch, batch_idx, val=False):
         imgs, tgt, tgt_pad_mask = batch
@@ -118,6 +123,7 @@ class SplineFormer(pl.LightningModule):
 
         tip_pred = self.tip_predictor(imgs).unsqueeze(1)
         pred_seq = torch.cat([tip_pred, pred_seq], dim=1)
+        pred_seq = torch.clip(pred_seq, 0, 1)
 
         losses = self._compute_loss(pred_seq, eos_pred, tgt, eos_labels[:, 1:], tgt_pad_mask)
 
@@ -165,17 +171,22 @@ class SplineFormer(pl.LightningModule):
         seq_lens = tgt_pad_mask.sum(1)
         pred_seq_lens = torch.zeros_like(seq_lens)
         for i, img in enumerate(imgs):
-            pred_seq, encoder_atts, decoder_atts, memory = self.generate_sequence(img.unsqueeze(0))
+            pred_seq, encoder_atts, decoder_atts, meemory = self.generate_sequence(img.unsqueeze(0))
             pred_len = pred_seq.size(1)
             generated_seq[i, :pred_len, :] = pred_seq[0, :, :]
             pred_seq_lens[i] = pred_len
 
         loss = self.lambda_seq * (self.criterion_seq(generated_seq, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
+        metrics = self.test_metrics(generated_seq, tgt, tgt_pad_mask)
 
         # plot_prediction(imgs, generated_seq, pred_seq_lens)
 
         losses = compute_metrics(generated_seq, pred_seq_lens, tgt, seq_lens)
+
         for k, v in losses.items():
+            self.log(k, v)
+
+        for k, v in metrics.items():
             self.log(k, v)
 
         self.log("loss", loss)
@@ -205,6 +216,7 @@ class SplineFormer(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx):
         X, tgt, _ = batch
+        self.eval()
         y_hat = self.generate_sequence(X, output_attentions=True)
         generated_seq, encoder_atts, decoder_atts, memory = y_hat
         img = X[0].cpu()
@@ -219,14 +231,15 @@ class SplineFormer(pl.LightningModule):
             patch_size=PATCH_SIZE,
             layer=-1,
             aggreg_func=lambda x: torch.max(x, dim=2)[0],
-            discard_ratio=0.7,
+            discard_ratio=0.8,
         )
         utils.plot_attention_maps(generated_seq[0, 1:], decoder_atts[0], img[0])
         return X, *y_hat
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=5e-5)
-        return optimizer
+        optimizer = torch.optim.AdamW(self.parameters(), lr=1e-4, weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)  # Example scheduler
+        return [optimizer], [scheduler]
 
 
 def plot_prediction(imgs, pred_seqs, pred_seq_lens):

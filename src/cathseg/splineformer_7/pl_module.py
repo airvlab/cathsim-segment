@@ -4,9 +4,8 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-import torch.optim as optim
-from cathseg.metrics import compute_all_metrics
-from cathseg.splineformer_6.model import SplineTransformer as Model
+from cathseg.metrics import MyLossFn, compute_all_metrics
+from cathseg.splineformer_7.model import SplineTransformer as Model
 from torch import Tensor
 
 BATCH_SIZE = 32
@@ -48,8 +47,8 @@ class SplineFormer(pl.LightningModule):
         d_model: int = 512,
         patch_size: int = 32,
         num_heads: int = 8,
-        num_layers_encoder: int = 6,
-        num_layers_decoder: int = 6,
+        num_layers_encoder: int = 10,
+        num_layers_decoder: int = 10,
         dropout: float = 0.1,
         n_dim: int = 2,
     ):
@@ -60,7 +59,11 @@ class SplineFormer(pl.LightningModule):
         self.tgt_max_len = tgt_max_len
         self.img_size = img_size
 
-        self.tip_predictor = modules.TipPredictor(num_channels=num_channels)
+        self.tip_predictor = modules.TipPredictorMobileNetV2(
+            image_size=img_size,
+            num_channels=num_channels,
+            num_dim=3,
+        )
 
         self.model = Model(
             image_size=img_size,
@@ -74,12 +77,15 @@ class SplineFormer(pl.LightningModule):
             tgt_max_len=tgt_max_len,
         )
 
-        # self.criterion_seq = nn.MSELoss(reduction="none")
-        self.criterion_seq = nn.HuberLoss(reduction="none")
+        self.criterion_knot = nn.HuberLoss(reduction="none")
+        self.criterion_coeff = nn.MSELoss(reduction="none")
         self.criterion_eos = nn.BCELoss(reduction="none")
 
-        self.lambda_seq = self.img_size
+        self.lambda_knot = 100.0
+        self.lambda_coeff = 100.0
         self.lambda_eos = 1.0
+
+        self.test_metrics = MyLossFn()
 
         self.val_step_outputs = []
 
@@ -90,15 +96,22 @@ class SplineFormer(pl.LightningModule):
         return seq_pred, eos_pred.squeeze(-1), encoder_atts, decoder_atts, memory
 
     def _compute_loss(self, pred_seq, eos_pred, tgt_output, eos_labels, tgt_pad_mask):
-        loss_seq = self.criterion_seq(pred_seq, tgt_output)
+        loss_knot = self.criterion_knot(pred_seq[:, :, 0:1], tgt_output[:, :, 0:1])
+        loss_coeff = self.criterion_coeff(pred_seq[:, :, 1:3], tgt_output[:, :, 1:3])
         loss_eos = self.criterion_eos(eos_pred, eos_labels)
 
-        loss_seq = (loss_seq * tgt_pad_mask.unsqueeze(-1)).sum()
-        loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum()
+        loss_knot = (loss_knot * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
+        loss_coeff = (loss_coeff * tgt_pad_mask.unsqueeze(-1)).sum() / tgt_pad_mask.sum()
+        loss_eos = (loss_eos * tgt_pad_mask[:, 1:]).sum() / tgt_pad_mask.sum()
 
-        loss = self.lambda_seq * loss_seq + self.lambda_eos * loss_eos
+        loss = self.lambda_knot * loss_knot + self.lambda_coeff * loss_coeff + self.lambda_eos * loss_eos
 
-        return dict(seq=loss_seq * self.img_size, eos=loss_eos, total_loss=loss)
+        return dict(
+            knot=self.lambda_knot * loss_knot,
+            coeff=self.lambda_coeff * loss_coeff,
+            eos=loss_eos,
+            total_loss=loss,
+        )
 
     def _step(self, batch, batch_idx, val=False):
         imgs, tgt, tgt_pad_mask = batch
@@ -165,17 +178,22 @@ class SplineFormer(pl.LightningModule):
         seq_lens = tgt_pad_mask.sum(1)
         pred_seq_lens = torch.zeros_like(seq_lens)
         for i, img in enumerate(imgs):
-            pred_seq, encoder_atts, decoder_atts, memory = self.generate_sequence(img.unsqueeze(0))
+            pred_seq, encoder_atts, decoder_atts, meemory = self.generate_sequence(img.unsqueeze(0))
             pred_len = pred_seq.size(1)
             generated_seq[i, :pred_len, :] = pred_seq[0, :, :]
             pred_seq_lens[i] = pred_len
 
-        loss = self.lambda_seq * (self.criterion_seq(generated_seq, tgt) * tgt_pad_mask.unsqueeze(-1)).sum()
+        generated_seq = torch.clip(generated_seq, 0, 1)
+        metrics = self.test_metrics(generated_seq, tgt, tgt_pad_mask)
 
-        # plot_prediction(imgs, generated_seq, pred_seq_lens)
+        plot_prediction(imgs, generated_seq, pred_seq_lens)
 
         losses = compute_metrics(generated_seq, pred_seq_lens, tgt, seq_lens)
+
         for k, v in losses.items():
+            self.log(k, v)
+
+        for k, v in metrics.items():
             self.log(k, v)
 
         self.log("loss", loss)
@@ -205,6 +223,7 @@ class SplineFormer(pl.LightningModule):
 
     def predict_step(self, batch, batch_idx):
         X, tgt, _ = batch
+        self.eval()
         y_hat = self.generate_sequence(X, output_attentions=True)
         generated_seq, encoder_atts, decoder_atts, memory = y_hat
         img = X[0].cpu()
@@ -219,14 +238,14 @@ class SplineFormer(pl.LightningModule):
             patch_size=PATCH_SIZE,
             layer=-1,
             aggreg_func=lambda x: torch.max(x, dim=2)[0],
-            discard_ratio=0.7,
+            discard_ratio=0.999,
         )
         utils.plot_attention_maps(generated_seq[0, 1:], decoder_atts[0], img[0])
+        exit()
         return X, *y_hat
 
     def configure_optimizers(self):
-        optimizer = optim.AdamW(self.parameters(), lr=5e-5)
-        return optimizer
+        return torch.optim.SGD(self.parameters(), lr=0.01)
 
 
 def plot_prediction(imgs, pred_seqs, pred_seq_lens):
@@ -263,8 +282,8 @@ def plot_prediction(imgs, pred_seqs, pred_seq_lens):
         pts = sample_spline((t, c.T, 3), delta=10)
 
         axs[idx].imshow(img, cmap="gray")
-        axs[idx].plot(c[:, 0], c[:, 1], "ro", markersize=1)
         axs[idx].plot(pts[:, 0], pts[:, 1], "b", linewidth=0.5)
+        axs[idx].plot(c[:, 0], c[:, 1], "go--", markersize=1, linewidth=0.5)
 
     # Turn off axes for all subplots
     for ax in axs:
@@ -275,7 +294,7 @@ def plot_prediction(imgs, pred_seqs, pred_seq_lens):
         axs[idx].remove()
 
     fig.subplots_adjust(wspace=0, hspace=0)
-    fig.savefig(f"samples/{INSTANCE}.png")
+    fig.savefig(f"samples/splineformer/{INSTANCE}.png")
     INSTANCE += 1
     plt.tight_layout()
     # plt.show()
@@ -368,55 +387,3 @@ def get_tcks(params):
     c = params[:, :, 1:3] * 1024
 
     return t, c
-
-
-def main():
-    from cathseg.dataset import Guide3DModule
-
-    dm = Guide3DModule(batch_size=1, n_channels=NUM_CHANNELS, image_size=IMAGE_SIZE)
-    dm.setup("fit")
-    dl = dm.val_dataloader()
-    print("Val batches:", len(dl))
-
-    model = SplineFormer(
-        tgt_max_len=Guide3DModule.max_seq_len,
-        patch_size=PATCH_SIZE,
-        num_channels=NUM_CHANNELS,
-        img_size=IMAGE_SIZE,
-    )
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-
-    # Training loop
-    for epoch in range(100):  # Replace with more epochs as needed
-        model.train()
-        running_loss = 0.0
-        for i, batch in enumerate(dl):
-            img, target_seq, target_mask = batch
-            # loss = model.training_step(batch, i)
-            # print(loss)
-            # plot_instance(tuple(x[0] for x in batch), dataset)
-
-            # loss = model.training_step(batch, i)
-            # model.test_step(batch, i)
-            model.generate_sequence(img)
-
-            exit()
-
-            # Backward and optimize
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-
-            # if i == 3:
-            #     exit()
-            # exit()
-
-        print(f"Epoch [{epoch+1}/100], Loss: {running_loss/len(dl)}")
-
-    print("Finished Training")
-
-
-if __name__ == "__main__":
-    main()

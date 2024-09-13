@@ -4,26 +4,26 @@ import cathseg.utils as utils
 import pytorch_lightning as pl
 import torch
 from cathseg.callbacks import ImageCallbackLogger
-from cathseg.dataset import Guide3D, Guide3DModule
-from cathseg.splineformer.pl_module import SplineFormer as Model
+from cathseg.dataset import Guide3DModule
+from cathseg.splineformer_8.pl_module import SplineFormer as Model
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
 
-torch.manual_seed(0)
-torch.set_float32_matmul_precision("medium")
+# torch.manual_seed(2)
+torch.set_float32_matmul_precision("high")
 
 wandb.require("core")
 # os.environ["WANDB_MODE"] = "offline"
 
 
-MODEL_VERSION = "1024_3"
-PROJECT = "transformer-5"
+MODEL_VERSION = "1024"
+PROJECT = "transformer-8"
 BATCH_SIZE = 32
 IMAGE_SIZE = 1024
 NUM_CHANNELS = 1
 PATCH_SIZE = 32
-D_MODEL = 256
+D_MODEL = 512
 LIGHTNING_MODEL_DIR = f"lightning_model/{PROJECT}_{MODEL_VERSION}"
 
 
@@ -37,20 +37,20 @@ def c_untransform(c):
 
 
 def t_untransform(t):
-    return t * IMAGE_SIZE
+    return t
 
 
 def c_transform(c):
-    return c / 1024
+    return c / IMAGE_SIZE
 
 
 def t_transform(t):
-    return t / 1024
+    return t
 
 
 dm = Guide3DModule(
     dataset_path=Path.home() / "data/segment-real/",
-    annotations_file="sphere_wo_reconstruct_2.json",
+    annotations_file="sphere_wo_reconstruct_norm.json",
     batch_size=BATCH_SIZE,
     n_channels=NUM_CHANNELS,
     image_size=IMAGE_SIZE,
@@ -59,13 +59,13 @@ dm = Guide3DModule(
 )
 
 model = Model(
-    tgt_max_len=Guide3D.max_seq_len,
+    tgt_max_len=23,
     img_size=IMAGE_SIZE,
     num_channels=NUM_CHANNELS,
     d_model=D_MODEL,
     patch_size=PATCH_SIZE,
     num_heads=8,
-    dropout=0.1,
+    dropout=0,
 )
 
 image_callback = ImageCallbackLogger(
@@ -78,18 +78,23 @@ def train():
     wandb_logger = pl.loggers.WandbLogger(project=PROJECT, version=MODEL_VERSION, log_model=True)
     trainer = pl.Trainer(
         default_root_dir=LIGHTNING_MODEL_DIR,
-        max_epochs=600,
+        max_epochs=1000,
         logger=wandb_logger,
         callbacks=[image_callback, model_checkpoint_callback],
+        gradient_clip_val=1,
     )
-    trainer.fit(model, datamodule=dm, ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"))
+    trainer.fit(
+        model,
+        datamodule=dm,
+        # ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
+    )
     trainer.test(model, datamodule=dm)
 
 
 def dummy_run_2():
     dm = Guide3DModule(
         dataset_path=Path.home() / "data/segment-real/",
-        annotations_file="sphere_wo_reconstruct.json",
+        annotations_file="sphere_wo_reconstruct_norm.json",
         batch_size=1,
         n_channels=NUM_CHANNELS,
         image_size=IMAGE_SIZE,
@@ -97,9 +102,14 @@ def dummy_run_2():
         t_transform=t_transform,
     )
     trainer = pl.Trainer(
-        fast_dev_run=True, default_root_dir=LIGHTNING_MODEL_DIR, callbacks=[image_callback, model_checkpoint_callback]
+        fast_dev_run=True,
+        default_root_dir=LIGHTNING_MODEL_DIR,
+        callbacks=[image_callback, model_checkpoint_callback],
     )
-    trainer.fit(model, datamodule=dm)
+    trainer.fit(
+        model,
+        datamodule=dm,
+    )
 
 
 def test():
@@ -116,23 +126,13 @@ def test():
 
 
 def predict():
-    dm = Guide3DModule(
-        dataset_path=Path.home() / "data/segment-real/",
-        annotations_file="sphere_wo_reconstruct.json",
-        batch_size=1,
-        n_channels=NUM_CHANNELS,
-        image_size=IMAGE_SIZE,
-        c_transform=c_transform,
-        t_transform=t_transform,
-    )
-
     trainer = pl.Trainer(
         default_root_dir=LIGHTNING_MODEL_DIR, max_epochs=200, callbacks=[image_callback, model_checkpoint_callback]
     )
     predictions = trainer.predict(
         model,
         datamodule=dm,
-        return_predictions=True,
+        return_predictions=False,
         ckpt_path=utils.get_latest_ckpt(f"models/{PROJECT}-{MODEL_VERSION}"),
     )
 
@@ -162,6 +162,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    # train()
-    test()
+    train()
+    # test()
     # predict()

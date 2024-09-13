@@ -1,8 +1,38 @@
 import cathseg.utils as utils
+import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from cathseg.metrics import compute_all_metrics
+from PIL import Image
+
+INDEX = 0
+
+
+def apply_blue_mask(grayscale_img, binary_mask, output_path):
+    # print(grayscale_img.shape, grayscale_img.min(), grayscale_img.max())
+    # plt.imshow(grayscale_img)
+    # plt.show()
+    # exit()
+    grayscale_img = Image.fromarray(grayscale_img * 255)
+    binary_mask = Image.fromarray(binary_mask)
+
+    # Convert grayscale image to RGB for applying color mask
+    grayscale_img_rgb = grayscale_img.convert("RGB")
+    # grayscale_img_rgb.show("grayscale img")
+    grayscale_img_array = np.array(grayscale_img_rgb)
+
+    # Convert mask to binary (0 or 1)
+    binary_mask_array = np.array(binary_mask) > 0.001
+
+    blue_overlay = np.zeros_like(grayscale_img_array)
+    blue_overlay[..., 2] = 255
+
+    result = np.where(binary_mask_array[..., None], blue_overlay, grayscale_img_array)
+
+    result_img = Image.fromarray(result.astype("uint8"))
+
+    result_img.save(output_path)
 
 
 class SegmentModule(pl.LightningModule):
@@ -16,26 +46,38 @@ class SegmentModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         x, y = batch
-        y_hat = self(x)
+        y_hat = torch.sigmoid(self(x))
         loss = self.loss(y_hat, y)
         self.log("train/loss", loss)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
-        y_hat = self(x)
+        y_hat = torch.sigmoid(self(x))
         loss = self.loss(y_hat, y)
         self.log("val/loss", loss)
         return loss
 
     def test_step(self, batch, batch_idx):
+        global INDEX
         x, y = batch
-        y_hat = self(x)
+        y_hat = torch.sigmoid(self(x))
         loss = self.loss(y_hat, y)
-        self.log("test/loss", loss)
+        y = (y >= 0.001).to(int)
         losses = compute_all_metrics(y, y_hat)
         for k, v in losses.items():
             self.log(k, v)
+
+        #apply_blue_mask(x[0].squeeze().cpu().numpy(), y_hat[0].squeeze().cpu().numpy(), f"samples_segment/{INDEX}.png")
+        INDEX += 1
+        # fig, axs = plt.subplots(1, 2)
+        # y = y.cpu().numpy()
+        # y_hat = y_hat.cpu().numpy()
+        # axs[0].imshow(y[0].squeeze(), cmap="gray")
+        # axs[1].imshow(y_hat[0].squeeze(), cmap="gray")
+        # for ax in axs:
+        #     ax.axis("off")
+        # plt.show()
         return loss
 
     def configure_optimizers(self):
@@ -60,7 +102,7 @@ def train(model, ckpt_name, **kwargs):
         version=ckpt_name,
     )
 
-    dm = Guide3DSegmentModule(batch_size=2, image_size=1024, mask_transforms=mask_transforms)
+    dm = Guide3DSegmentModule(batch_size=1, image_size=1024, mask_transforms=mask_transforms)
     model = SegmentModule(model, **kwargs)
     model_checkpoint_callback = ModelCheckpoint(f"models/{ckpt_name}", monitor="val/loss", mode="min")
 
@@ -81,7 +123,7 @@ def test(model, ckpt_name):
         ]
     )
 
-    dm = Guide3DSegmentModule(batch_size=2, image_size=1024, mask_transforms=mask_transforms)
+    dm = Guide3DSegmentModule(batch_size=2, image_size=1024, mask_transforms=mask_transforms, dataset_path="/tmp/guide3d/guide3d/", download=True)
     model = SegmentModule(model)
     model_checkpoint_callback = ModelCheckpoint(f"models/{ckpt_name}", monitor="val/loss", mode="min")
 
@@ -89,12 +131,14 @@ def test(model, ckpt_name):
     trainer.test(
         model,
         datamodule=dm,
-        ckpt_path=utils.get_latest_ckpt(f"models/{ckpt_name}"),
+        ckpt_path="~/Downloads/epoch=31-step=69888.ckpt",
     )
 
 
 if __name__ == "__main__":
     from cathseg.segment.unet import UNet
+    from cathseg.segment.swin_unet import SwinTransformerSys as SwinUNet
 
-    train(UNet, ckpt_name="unet")
-    # test(UNet, ckpt_name="unet")
+    # train(UNet, ckpt_name="unet")
+    #test(UNet, ckpt_name="unet")
+    test(SwinUNet, ckpt_name="swinunet")
