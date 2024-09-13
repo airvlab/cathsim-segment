@@ -289,7 +289,11 @@ def plot_prediction(imgs, pred_seqs, pred_seq_lens):
         c = c.cpu().numpy()
 
         pts = sample_spline((t, c.T, 3), delta=10)
-
+        pts_filtered = []
+        for pt in pts:
+            if 0 <= pt[0] < 1024 and 0 <= pt[1] < 1024:
+                pts_filtered.append(pt)
+        pts = np.array(pts_filtered)
         axs[idx].imshow(img, cmap="gray")
         axs[idx].plot(pts[:, 0], pts[:, 1], "b", linewidth=0.5)
         axs[idx].plot(c[:, 0], c[:, 1], "go--", markersize=1, linewidth=0.5)
@@ -303,7 +307,7 @@ def plot_prediction(imgs, pred_seqs, pred_seq_lens):
         axs[idx].remove()
 
     fig.subplots_adjust(wspace=0, hspace=0)
-    fig.savefig(f"samples/splineformer/{INSTANCE}.png")
+    fig.savefig(f"samples/splineformer-2/{INSTANCE}.png")
     INSTANCE += 1
     plt.tight_layout()
     # plt.show()

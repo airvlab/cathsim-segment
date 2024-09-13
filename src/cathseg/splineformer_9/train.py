@@ -5,7 +5,7 @@ import pytorch_lightning as pl
 import torch
 from cathseg.callbacks import ImageCallbackLogger
 from cathseg.dataset import Guide3DModule
-from cathseg.splineformer_7.pl_module import SplineFormer as Model
+from cathseg.splineformer_9.pl_module import SplineFormer as Model
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 import wandb
@@ -157,6 +157,6 @@ def predict():
 
 if __name__ == "__main__":
     # dummy_run_2()
-    train()
+    # train()
     # test()
-    # predict()
+    predict()

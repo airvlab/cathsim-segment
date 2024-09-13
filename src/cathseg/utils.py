@@ -177,7 +177,8 @@ def plot_attention_maps(gen, processed_attentions, img=None):
             continue
 
         axes[point_index].imshow(img, cmap="gray")
-        axes[point_index].imshow(processed_attentions[point_index], alpha=0.15, cmap="jet")
+        axes[point_index].imshow(processed_attentions[point_index], alpha=0.3, cmap="jet")
+
         if point_index % (grid_rows * grid_cols - 1) == 0 and point_index > 0:
             break
         if point_index == num_points - 1:
@@ -186,8 +187,8 @@ def plot_attention_maps(gen, processed_attentions, img=None):
 
     for idx in range(len(axes)):
         axes[idx].axis("off")
-    fig.subplots_adjust(wspace=0, hspace=0)
-    fig.savefig(f"samples/atttention_maps/{INDEX}.png", bbox_inches="tight")
+    fig.subplots_adjust(hspace=0)
+    fig.savefig(f"samples/atttention_maps_2/{INDEX}.png", bbox_inches="tight")
     INDEX += 1
     plt.close()
     # plt.show()
